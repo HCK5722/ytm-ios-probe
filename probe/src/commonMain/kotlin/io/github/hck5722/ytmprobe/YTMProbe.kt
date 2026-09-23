@@ -140,7 +140,8 @@ public class YTMProbe {
                 try {
                     val candidateStream = extractor.extract(
                         videoId = candidate,
-                        hints = ContentHints(isAgeRestricted = true.takeIf { forceSabr }, wantVideo = false),
+                        // SABR preference is not evidence that the song is age-restricted.
+                        hints = ContentHints(wantVideo = false, sabrFirst = forceSabr),
                         audioQuality = AudioQuality.AUTO,
                     )
                     if (candidateStream == null) {
