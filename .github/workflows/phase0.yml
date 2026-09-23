@@ -56,25 +56,54 @@ jobs:
           echo "name=$DEVICE" >> "$GITHUB_OUTPUT"
           echo "Using simulator: $DEVICE"
 
+      - name: Start loopback-only bgutil PoToken service
+        run: |
+          docker pull brainicism/bgutil-ytdlp-pot-provider:2.0.0-node > /dev/null 2>&1
+          docker run --detach --rm --name ytm-probe-bgutil \
+            --log-driver none \
+            --publish 127.0.0.1:4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider:2.0.0-node \
+            > /dev/null
+          for attempt in {1..60}; do
+            if curl --silent --fail http://127.0.0.1:4416/ping > /dev/null; then
+              echo "PROBE_TOKEN_SERVICE=PASS bind=127.0.0.1:4416 version=2.0.0"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PROBE_TOKEN_SERVICE=FAIL reason=health_timeout"
+          exit 1
+
       - name: Run iOS simulator assertions
         run: |
           set -o pipefail
-          xcodebuild test \
+          trap 'docker stop ytm-probe-bgutil > /dev/null 2>&1 || true' EXIT
+          set +e
+          PROBE_TOKEN_GROUP=2a xcodebuild test \
             -project iosProbe/YTMProbeHost.xcodeproj \
             -scheme YTMProbeHost \
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.name }}" \
-            -resultBundlePath PhaseZero.xcresult \
+            -resultBundlePath PhaseTwoA.xcresult \
             CODE_SIGNING_ALLOWED=NO \
-            | tee xcodebuild.log
+            | tee xcodebuild-2a-private.log \
+            | grep -oE 'PROBE_[A-Z0-9_]+=.*|PROBE_TOKEN .*|PROBE_DIAG_(SUMMARY|RUN) .*' | tee xcodebuild-2a.log
+          statuses=("${PIPESTATUS[@]}")
+          status=${statuses[0]}
+          rm -f xcodebuild-2a-private.log
+          exit "$status"
 
       - name: Publish probe summary
         if: always()
         run: |
+          : > safe-probe.log
+          grep -E 'PROBE_[A-Z0-9_]+=' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
+          grep -E 'PROBE_TOKEN ' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
+          grep -E 'PROBE_DIAG_(SUMMARY|RUN) ' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
+          grep -E 'PROBE_1_DEPENDENCY_AND_LINK' gradle-build.log >> safe-probe.log 2>/dev/null || true
           {
-            echo '## Phase 0 probe markers'
+            echo '## Phase 2a probe markers'
             echo '```text'
-            grep -E 'PROBE_[0-9_]+|PROBE_DIAG|PROBE_DIAGNOSTIC' xcodebuild.log 2>/dev/null || true
-            grep -E 'PROBE_1_DEPENDENCY_AND_LINK' gradle-build.log 2>/dev/null || true
+            cat safe-probe.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -82,9 +111,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase0-probe-${{ github.run_number }}
+          name: phase2a-probe-${{ github.run_number }}
           if-no-files-found: warn
           path: |
-            gradle-build.log
-            xcodebuild.log
-            PhaseZero.xcresult
+            safe-probe.log
+
+      - name: Stop loopback-only bgutil service
+        if: always()
+        run: docker stop ytm-probe-bgutil > /dev/null 2>&1 || true

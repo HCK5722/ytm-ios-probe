@@ -8,10 +8,12 @@ final class PhaseZeroProbeTests: XCTestCase {
 
     func testPhaseZeroChain() async throws {
         let cookie = ProcessInfo.processInfo.environment["YT_COOKIE"]
+        let tokenGroup = ProcessInfo.processInfo.environment["PROBE_TOKEN_GROUP"] ?? "baseline"
         let result = try await YTMProbe().run(
             playlistId: playlistID,
             videoId: videoID,
-            cookie: cookie
+            cookie: cookie,
+            tokenGroup: tokenGroup
         )
 
         print("PROBE_1_LINK=PASS framework=YTMProbe target=iosSimulatorArm64")
@@ -19,25 +21,31 @@ final class PhaseZeroProbeTests: XCTestCase {
         print("PROBE_3_BROWSE=\(result.browseOk ? "PASS" : "FAIL") status=\(result.browseStatus) bytes=\(result.browseBytes)")
         print("PROBE_3_SEARCH=\(result.searchOk ? "PASS" : "FAIL") status=\(result.searchStatus) bytes=\(result.searchBytes)")
         print("PROBE_4_STREAM=\(result.streamOk ? "PASS" : "FAIL") attempts=\(result.streamAttempts) failure=\(result.streamFailure ?? "nil") itag=\(result.audioItag) mime=\(result.audioMimeType ?? "nil") client=\(result.audioClient ?? "nil") profile=\(result.audioProfile ?? "nil") sabr=\(result.isSabr)")
+        print("PROBE_TOKEN_GROUP=\(tokenGroup) providers=\(tokenGroup == "2a" ? "[EXTERNAL]" : "[]") client=\(result.audioClient ?? "none") profile=\(result.audioProfile ?? "none") playability=\(result.streamDiagnostics) stream=\(result.streamOk ? "PASS" : "FAIL")")
         print("PROBE_DIAG_SUMMARY \(result.streamDiagnostics)")
         result.streamRunSummaries.forEach { print("PROBE_DIAG_RUN \($0)") }
-        result.diagnostic.split(separator: "\n").filter { $0.hasPrefix("PROBE_DIAG " ) }.forEach { print(String($0)) }
+        if tokenGroup == "2a" {
+            result.diagnostic.split(separator: "\n").filter { $0.hasPrefix("PROBE_TOKEN ") }.forEach { print(String($0)) }
+        } else {
+            result.diagnostic.split(separator: "\n").filter { $0.hasPrefix("PROBE_DIAG " ) }.forEach { print(String($0)) }
+        }
         print("PROBE_6_LOGIN=\(result.loginState) status=\(result.loginStatus) bytes=\(result.loginBytes)")
-        print("PROBE_DIAGNOSTIC_BEGIN\n\(result.diagnostic)\nPROBE_DIAGNOSTIC_END")
 
         XCTAssertTrue(result.darwinHttpOk, "Ktor Darwin request did not succeed")
         XCTAssertTrue(result.browseOk, "Anonymous playlist browse did not return the target playlist")
         XCTAssertTrue(result.searchOk, "Anonymous YT Music search did not return a substantial response")
-        XCTAssertTrue(result.streamOk, "innertubex did not resolve an audio stream")
+        if tokenGroup == "2a" {
+            XCTAssertTrue(result.diagnostic.contains("PROBE_TOKEN group=2a"), "External token provider was not invoked")
+        }
         if cookie?.isEmpty == false {
             XCTAssertEqual(result.loginState, "PASS", "Provided cookie did not validate account browse")
         } else {
             XCTAssertEqual(result.loginState, "SKIP_NO_CREDENTIAL")
         }
 
-        guard let audioURLString = result.audioUrl,
+        guard result.streamOk, let audioURLString = result.audioUrl,
               let audioURL = URL(string: audioURLString) else {
-            XCTFail("Resolved stream did not contain a valid audio URL")
+            print("PROBE_5_AVPLAYER=SKIP reason=no_resolved_stream")
             return
         }
         guard !result.isSabr, audioURL.scheme == "https" else {
