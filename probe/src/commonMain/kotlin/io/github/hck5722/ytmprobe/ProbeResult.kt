@@ -10,6 +10,8 @@ public class ProbeResult(
     public val searchStatus: Int,
     public val searchBytes: Int,
     public val streamOk: Boolean,
+    public val streamAttempts: Int,
+    public val streamFailure: String?,
     public val audioUrl: String?,
     public val audioHeaders: Map<String, String>,
     public val audioMimeType: String?,

@@ -49,11 +49,24 @@ public class YTMProbe {
                 innerTube = innerTube,
                 logger = logger,
             )
-            val stream = extractor.extract(
-                videoId = videoId,
-                hints = ContentHints(wantVideo = false),
-                audioQuality = AudioQuality.AUTO,
-            )
+            val streamCandidates = listOf(videoId, "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")
+            var stream: com.metrolist.innertubex.extraction.ExtractedStream? = null
+            var streamFailure: String? = null
+            var streamAttempts = 0
+            for (candidate in streamCandidates) {
+                streamAttempts += 1
+                try {
+                    stream = extractor.extract(
+                        videoId = candidate,
+                        hints = ContentHints(wantVideo = false),
+                        audioQuality = AudioQuality.AUTO,
+                    )
+                    if (stream != null) break
+                } catch (error: Throwable) {
+                    streamFailure = "${error::class.simpleName}: ${error.message}"
+                    logLines += "STREAM_CANDIDATE_FAIL candidate=$candidate reason=$streamFailure"
+                }
+            }
 
             val normalizedCookie = cookie?.trim()?.takeIf(String::isNotEmpty)
             val loginStatus: Int
@@ -87,6 +100,8 @@ public class YTMProbe {
                 searchStatus = searchResponse.status.value,
                 searchBytes = searchBody.encodeToByteArray().size,
                 streamOk = stream != null,
+                streamAttempts = streamAttempts,
+                streamFailure = streamFailure,
                 audioUrl = stream?.audioUrl,
                 audioHeaders = stream?.headers.orEmpty(),
                 audioMimeType = stream?.mimeType,
