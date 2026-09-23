@@ -96,11 +96,8 @@ public class YTMProbe {
                 val fallbackLocale = YouTubeLocale(gl = "US", hl = "en")
                 logLines += "PROBE_BROWSE_RETRY reason=http_400 locale=${fallbackLocale.gl}/${fallbackLocale.hl}"
                 innerTube.locale = fallbackLocale
-                try {
-                    innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
-                } finally {
-                    innerTube.locale = detectedLocale
-                }
+                logLines += "PROBE_LOCALE_ACTIVE gl=${fallbackLocale.gl} hl=${fallbackLocale.hl}"
+                innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
             }
             val browseBody = browseResponse.bodyAsTextLimited(MAX_RESPONSE_BYTES)
 
