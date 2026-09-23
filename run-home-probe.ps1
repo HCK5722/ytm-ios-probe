@@ -80,7 +80,7 @@ try {
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
     Write-Result 'PROBE_HOME_RUN=START'
     Require-Version 'java' 'version\s+"21(?:\.|")' 'winget install EclipseAdoptium.Temurin.21.JDK' 'JDK21'
-    Require-Version 'node' '^v22\.' 'winget install OpenJS.NodeJS.LTS' 'Node22'
+    Require-Version 'node' '^v22\.' 'winget install --id OpenJS.NodeJS.22 --exact' 'Node22'
     $script:gradlew = Join-Path $repoRoot 'gradlew.bat'
     if (-not (Test-Path $script:gradlew)) { throw 'gradlew_missing' }
     if ($UseCookieEnv -and [string]::IsNullOrWhiteSpace($env:YT_COOKIE)) {

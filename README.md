@@ -19,7 +19,7 @@ Target playlist: `PLd9orNjDFThOxxBaWd36m-6a87SO34Y62`.
 
 1. 如果脚本提示缺依赖，安装：
    `winget install EclipseAdoptium.Temurin.21.JDK`
-   和 `winget install OpenJS.NodeJS.LTS`
+   和 `winget install --id OpenJS.NodeJS.22 --exact`
 2. 关闭 VPN、代理软件和系统代理；本实验要证明取流请求来自住宅/运营商 IP。
 3. 双击仓库根目录的 `run-home-probe.bat`。结束后把 `probe-result.txt` 的全部内容贴回对话。
 
