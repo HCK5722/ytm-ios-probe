@@ -7,7 +7,6 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
-    FRAMEWORK_SEARCH_PATHS: "$(inherited) ../probe/build/bin/iosSimulatorArm64/debugFramework"
 targets:
   YTMProbeHost:
     type: application
@@ -16,6 +15,9 @@ targets:
       - Host
     info:
       path: Host/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     dependencies:
       - framework: ../probe/build/bin/iosArm64/debugFramework/YTMProbe.framework
         embed: false

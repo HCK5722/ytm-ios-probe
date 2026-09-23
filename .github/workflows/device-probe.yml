@@ -46,7 +46,8 @@ jobs:
           test -d "$APP"
           lipo -info "$APP/YTMProbeHost" | tee device-binary.log
           grep -q arm64 device-binary.log
-          /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' "$APP/Info.plist" | grep -q true
+          plutil -p "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' "$APP/Info.plist" | grep -Eiq 'true|1'
           mkdir -p build/ipa/Payload
           ditto "$APP" build/ipa/Payload/YTMProbeHost.app
           ditto -c -k --sequesterRsrc --keepParent build/ipa/Payload YTMProbe.ipa
