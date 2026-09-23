@@ -69,6 +69,16 @@ final class ProbeModel: ObservableObject {
                   let path = result.audioCachePath,
                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
                 state = "取流失败 / 非 SABR / 下载未完成"
+                let summaries = result.streamRunSummaries.joined(separator: "\n")
+                let tracks = result.sampleTrackResults.joined(separator: "\n")
+                let diagnostic = result.diagnostic.isEmpty ? "" : "\n\n日志：\n\(result.diagnostic)"
+                failureDetail = [
+                    "streamFailure=\(result.streamFailure ?? "nil")",
+                    "streamDiagnostics=\(result.streamDiagnostics)",
+                    summaries.isEmpty ? nil : "runSummaries:\n\(summaries)",
+                    tracks.isEmpty ? nil : "tracks:\n\(tracks)",
+                    diagnostic,
+                ].compactMap { $0 }.joined(separator: "\n\n")
                 let reason = !result.streamOk ? "stream" : (!result.isSabr ? "not_sabr" : "download")
                 verdict = "PROBE_PLAY=FAIL reason=\(reason)"
                 return
