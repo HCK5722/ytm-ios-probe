@@ -45,5 +45,7 @@ schemes:
         YTMProbeHostTests: [test]
     test:
       gatherCoverageData: false
+      environmentVariables:
+        PROBE_TOKEN_GROUP: "2a"
       targets:
         - YTMProbeHostTests

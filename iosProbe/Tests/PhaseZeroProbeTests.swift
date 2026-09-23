@@ -9,6 +9,8 @@ final class PhaseZeroProbeTests: XCTestCase {
     func testPhaseZeroChain() async throws {
         let cookie = ProcessInfo.processInfo.environment["YT_COOKIE"]
         let tokenGroup = ProcessInfo.processInfo.environment["PROBE_TOKEN_GROUP"] ?? "baseline"
+        print("PROBE_TOKEN_CONFIG=\(tokenGroup == "2a" ? "PASS" : "FAIL") group=\(tokenGroup)")
+        XCTAssertEqual(tokenGroup, "2a", "XCTest host did not receive the requested PoToken test group")
         let result = try await YTMProbe().run(
             playlistId: playlistID,
             videoId: videoID,
