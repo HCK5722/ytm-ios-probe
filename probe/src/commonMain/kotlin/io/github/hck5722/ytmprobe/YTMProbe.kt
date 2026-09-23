@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.collect
 import kotlin.time.TimeSource
 
 public class YTMProbe {
+    @Throws(Exception::class)
     public suspend fun run(
         playlistId: String,
         videoId: String,

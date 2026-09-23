@@ -86,8 +86,9 @@ final class ProbeModel: ObservableObject {
             state = passed ? "播放时间前进" : (item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "播放时间未前进")
             verdict = passed ? "PROBE_PLAY=PASS" : "PROBE_PLAY=FAIL reason=time_not_advancing"
         } catch {
-            state = "运行错误类型：\(type(of: error))"
-            verdict = "PROBE_PLAY=FAIL reason=\(type(of: error))"
+            let nsError = error as NSError
+            state = "运行错误：\(nsError.domain) / \(nsError.code)"
+            verdict = "PROBE_PLAY=FAIL reason=runtime_error"
         }
     }
 
