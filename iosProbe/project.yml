@@ -7,6 +7,8 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+    ENABLE_PREVIEWS: NO
 targets:
   YTMProbeHost:
     type: application
@@ -19,16 +21,18 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     dependencies:
-      - framework: ../probe/build/bin/iosArm64/debugFramework/YTMProbe.framework
+      - framework: ../probe/build/bin/iosArm64/releaseFramework/YTMProbe.framework
         embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.hck5722.ytmprobe.host
-        FRAMEWORK_SEARCH_PATHS: "$(inherited) ../probe/build/bin/iosArm64/debugFramework"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) ../probe/build/bin/iosArm64/releaseFramework"
         CODE_SIGNING_ALLOWED: NO
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: iphoneos
         ARCHS: arm64
+        SWIFT_OPTIMIZATION_LEVEL: "-O"
+        ENABLE_PREVIEWS: NO
   YTMProbeHostTests:
     type: bundle.unit-test
     platform: iOS

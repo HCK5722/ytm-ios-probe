@@ -22,8 +22,8 @@ jobs:
       - name: Link iOS device framework
         run: |
           chmod +x gradlew
-          ./gradlew :probe:linkDebugFrameworkIosArm64 --stacktrace
-          test -d probe/build/bin/iosArm64/debugFramework/YTMProbe.framework
+          ./gradlew :probe:linkReleaseFrameworkIosArm64 --stacktrace
+          test -d probe/build/bin/iosArm64/releaseFramework/YTMProbe.framework
 
       - name: Generate iOS device app project
         run: |
@@ -39,10 +39,11 @@ jobs:
             -scheme YTMProbeHost \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
+            -configuration Release \
             -derivedDataPath build/device-derived \
             CODE_SIGNING_ALLOWED=NO \
             build
-          APP='build/device-derived/Build/Products/Debug-iphoneos/YTMProbeHost.app'
+          APP='build/device-derived/Build/Products/Release-iphoneos/YTMProbeHost.app'
           test -d "$APP"
           lipo -info "$APP/YTMProbeHost" | tee device-binary.log
           grep -q arm64 device-binary.log

@@ -6,7 +6,7 @@ import YTMProbe
 struct YTMProbeHostApp: App {
     var body: some Scene {
         WindowGroup {
-            ProbeScreen(model: ProbeModel())
+            ProbeScreen()
         }
     }
 }
@@ -25,8 +25,11 @@ final class ProbeModel: ObservableObject {
 
     private var player: AVPlayer?
     private var rangeServer: LoopbackRangeServer?
+    private var started = false
 
-    init() {
+    func start() {
+        guard !started else { return }
+        started = true
         Task { await run() }
     }
 
@@ -103,7 +106,7 @@ final class ProbeModel: ObservableObject {
 }
 
 struct ProbeScreen: View {
-    @ObservedObject var model: ProbeModel
+    @StateObject private var model = ProbeModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -115,6 +118,10 @@ struct ProbeScreen: View {
             row("currentTime", model.currentTime)
             row("状态", model.state)
             Text(model.verdict).font(.system(.headline, design: .monospaced)).padding(.top, 8)
+            Button("开始探测") {
+                model.start()
+            }
+            .buttonStyle(.borderedProminent)
             Spacer()
         }
         .padding(20)
