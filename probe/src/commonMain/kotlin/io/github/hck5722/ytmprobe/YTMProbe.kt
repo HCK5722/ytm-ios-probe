@@ -43,6 +43,7 @@ public class YTMProbe {
         cookie: String?,
         tokenGroup: String = "baseline",
         tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
+        candidateVideoIds: List<String> = listOf(videoId),
     ): ProbeResult {
         val logLines = mutableListOf<String>()
         val logger = InnerTubeLogger { event: InnerTubeLogEvent ->
@@ -57,9 +58,14 @@ public class YTMProbe {
                     " tokenPresent=" + tokenPresent
             }
         }
-        val client = createHttpClient(darwinEngine())
+        val client = createHttpClient(probeEngine())
         val innerTube = InnerTube(client, logger = logger)
         try {
+            val normalizedCookie = cookie?.trim()?.takeIf(String::isNotEmpty)
+            if (normalizedCookie != null) {
+                innerTube.cookie = normalizedCookie
+                innerTube.useLoginForBrowse = true
+            }
             val darwinResponse = client.get("https://music.youtube.com/")
             val darwinBody = darwinResponse.bodyAsText()
 
@@ -83,7 +89,7 @@ public class YTMProbe {
                 logger = logger,
             )
             extractor.prewarm()
-            val streamCandidates = listOf(videoId)
+            val streamCandidates = candidateVideoIds.distinct().filter(String::isNotBlank).ifEmpty { listOf(videoId) }
             var stream: com.metrolist.innertubex.extraction.ExtractedStream? = null
             var streamFailure: String? = null
             var streamAttempts = 0
@@ -127,7 +133,6 @@ public class YTMProbe {
                 }
             }
 
-            val normalizedCookie = cookie?.trim()?.takeIf(String::isNotEmpty)
             val loginStatus: Int
             val loginBytes: Int
             val loginState: String
@@ -136,8 +141,6 @@ public class YTMProbe {
                 loginBytes = 0
                 loginState = "SKIP_NO_CREDENTIAL"
             } else {
-                innerTube.cookie = normalizedCookie
-                innerTube.useLoginForBrowse = true
                 val loginResponse = innerTube.browse(
                     client = YouTubeClient.WEB_REMIX,
                     browseId = "FEmusic_home",
@@ -256,4 +259,4 @@ private fun createHttpClient(engine: HttpClientEngine): HttpClient =
         }
     }
 
-internal expect fun darwinEngine(): HttpClientEngine
+internal expect fun probeEngine(): HttpClientEngine

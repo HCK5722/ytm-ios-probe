@@ -5,3 +5,4 @@ DerivedData/
 *.xcresult
 local.properties
 .DS_Store
+probe-result.txt
