@@ -8,6 +8,7 @@ import com.metrolist.innertubex.cipher.YouTubeCipherService
 import com.metrolist.innertubex.extraction.AudioQuality
 import com.metrolist.innertubex.extraction.ContentHints
 import com.metrolist.innertubex.extraction.InnerTubeExtractor
+import com.metrolist.innertubex.extraction.StreamResolveException
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.models.YouTubeClient
 import io.ktor.client.HttpClient
@@ -53,6 +54,8 @@ public class YTMProbe {
             var stream: com.metrolist.innertubex.extraction.ExtractedStream? = null
             var streamFailure: String? = null
             var streamAttempts = 0
+            var lastStreamDiagnostics = "not_run"
+            val streamRunSummaries = mutableListOf<String>()
             for (candidate in streamCandidates) {
                 streamAttempts += 1
                 try {
@@ -65,6 +68,25 @@ public class YTMProbe {
                 } catch (error: Throwable) {
                     streamFailure = "${error::class.simpleName}: ${error.message}"
                     logLines += "STREAM_CANDIDATE_FAIL candidate=$candidate reason=$streamFailure"
+                    val resolveError = error as? StreamResolveException
+                    if (resolveError != null) {
+                        val diagnostics = resolveError.diagnostics
+                        lastStreamDiagnostics = if (diagnostics != null) {
+                            "reason=${resolveError.reason} sawPlayable=unknown usedAuthenticatedWatchPage=${diagnostics.usedAuthenticatedWatchPage} attemptCount=${diagnostics.attempts.size} attemptSummary=${diagnostics.attempts.joinToString("|") { it.outcome }}"
+                        } else {
+                            "reason=${resolveError.reason} sawPlayable=unknown usedAuthenticatedWatchPage=unknown attemptCount=0 attemptSummary=missing"
+                        }
+                        val runSummary = "candidate=$candidate exceptionReason=${resolveError.reason} $lastStreamDiagnostics"
+                        streamRunSummaries += runSummary
+                        logLines += "PROBE_DIAG_RUN $runSummary"
+                        diagnostics?.attempts?.forEach { attempt ->
+                            logLines += "PROBE_DIAG exceptionReason=${resolveError.reason} sawPlayable=unknown client=${attempt.clientName} profile=${attempt.profileId ?: "none"} userAgent=${attempt.userAgent} outcome=${attempt.outcome} tokenUnavailable=not_exposed requestFailure=not_exposed failurePresent=not_exposed"
+                        }
+                    } else {
+                        val runSummary = "candidate=$candidate exceptionReason=NON_STREAM_RESOLVE $streamFailure"
+                        streamRunSummaries += runSummary
+                        logLines += "PROBE_DIAG_RUN $runSummary"
+                    }
                 }
             }
 
@@ -109,6 +131,8 @@ public class YTMProbe {
                 audioClient = stream?.clientName,
                 audioProfile = stream?.profileId,
                 isSabr = stream?.sabrBootstrap != null || stream?.audioUrl?.startsWith("sabr://") == true,
+                streamDiagnostics = lastStreamDiagnostics,
+                streamRunSummaries = streamRunSummaries,
                 loginState = loginState,
                 loginStatus = loginStatus,
                 loginBytes = loginBytes,

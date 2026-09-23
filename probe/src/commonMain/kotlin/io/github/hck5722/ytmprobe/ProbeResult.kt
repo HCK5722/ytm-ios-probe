@@ -19,6 +19,8 @@ public class ProbeResult(
     public val audioClient: String?,
     public val audioProfile: String?,
     public val isSabr: Boolean,
+    public val streamDiagnostics: String,
+    public val streamRunSummaries: List<String>,
     public val loginState: String,
     public val loginStatus: Int,
     public val loginBytes: Int,

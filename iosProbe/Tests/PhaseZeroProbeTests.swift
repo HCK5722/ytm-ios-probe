@@ -19,6 +19,9 @@ final class PhaseZeroProbeTests: XCTestCase {
         print("PROBE_3_BROWSE=\(result.browseOk ? "PASS" : "FAIL") status=\(result.browseStatus) bytes=\(result.browseBytes)")
         print("PROBE_3_SEARCH=\(result.searchOk ? "PASS" : "FAIL") status=\(result.searchStatus) bytes=\(result.searchBytes)")
         print("PROBE_4_STREAM=\(result.streamOk ? "PASS" : "FAIL") attempts=\(result.streamAttempts) failure=\(result.streamFailure ?? "nil") itag=\(result.audioItag) mime=\(result.audioMimeType ?? "nil") client=\(result.audioClient ?? "nil") profile=\(result.audioProfile ?? "nil") sabr=\(result.isSabr)")
+        print("PROBE_DIAG_SUMMARY \(result.streamDiagnostics)")
+        result.streamRunSummaries.forEach { print("PROBE_DIAG_RUN \($0)") }
+        result.diagnostic.split(separator: "\n").filter { $0.hasPrefix("PROBE_DIAG " ) }.forEach { print(String($0)) }
         print("PROBE_6_LOGIN=\(result.loginState) status=\(result.loginStatus) bytes=\(result.loginBytes)")
         print("PROBE_DIAGNOSTIC_BEGIN\n\(result.diagnostic)\nPROBE_DIAGNOSTIC_END")
 

@@ -73,7 +73,7 @@ jobs:
           {
             echo '## Phase 0 probe markers'
             echo '```text'
-            grep -E 'PROBE_[0-9_]+|PROBE_DIAGNOSTIC' xcodebuild.log 2>/dev/null || true
+            grep -E 'PROBE_[0-9_]+|PROBE_DIAG|PROBE_DIAGNOSTIC' xcodebuild.log 2>/dev/null || true
             grep -E 'PROBE_1_DEPENDENCY_AND_LINK' gradle-build.log 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
