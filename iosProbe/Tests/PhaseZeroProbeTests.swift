@@ -13,7 +13,8 @@ final class PhaseZeroProbeTests: XCTestCase {
             playlistId: playlistID,
             videoId: videoID,
             cookie: cookie,
-            tokenGroup: tokenGroup
+            tokenGroup: tokenGroup,
+            tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
         )
 
         print("PROBE_1_LINK=PASS framework=YTMProbe target=iosSimulatorArm64")
@@ -63,7 +64,7 @@ final class PhaseZeroProbeTests: XCTestCase {
         let player = AVPlayer(playerItem: item)
 
         try await waitUntilReady(item, timeoutSeconds: 45)
-        XCTAssertEqual(item.status, .readyToPlay, "AVPlayerItem never became readyToPlay: \(item.error?.localizedDescription ?? "no error")")
+        XCTAssertEqual(item.status, AVPlayerItem.Status.readyToPlay, "AVPlayerItem never became readyToPlay: \(item.error?.localizedDescription ?? "no error")")
 
         player.play()
         try await Task.sleep(for: .seconds(3))
@@ -75,13 +76,13 @@ final class PhaseZeroProbeTests: XCTestCase {
 
     private func waitUntilReady(_ item: AVPlayerItem, timeoutSeconds: Double) async throws {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while item.status == .unknown && Date() < deadline {
+        while item.status == AVPlayerItem.Status.unknown && Date() < deadline {
             try await Task.sleep(for: .milliseconds(200))
         }
-        if item.status == .failed {
+        if item.status == AVPlayerItem.Status.failed {
             throw item.error ?? ProbeFailure.playerFailed
         }
-        if item.status != .readyToPlay {
+        if item.status != AVPlayerItem.Status.readyToPlay {
             throw ProbeFailure.readyTimeout
         }
     }
