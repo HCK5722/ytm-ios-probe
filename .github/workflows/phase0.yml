@@ -30,6 +30,11 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Build and link Kotlin frameworks
         run: |
           chmod +x gradlew
@@ -58,15 +63,18 @@ jobs:
 
       - name: Start loopback-only bgutil PoToken service
         run: |
-          docker pull brainicism/bgutil-ytdlp-pot-provider:2.0.0-node > /dev/null 2>&1
-          docker run --detach --rm --name ytm-probe-bgutil \
-            --log-driver none \
-            --publish 127.0.0.1:4416:4416 \
-            brainicism/bgutil-ytdlp-pot-provider:2.0.0-node \
-            > /dev/null
+          set -euo pipefail
+          POT_DIR=$(mktemp -d)
+          echo "POT_DIR=$POT_DIR" >> "$GITHUB_ENV"
+          curl -fsSL https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/2.0.0.tar.gz | tar -xz -C "$POT_DIR" --strip-components=1
+          cd "$POT_DIR/server"
+          npm ci --ignore-scripts --no-audit --no-fund > /dev/null 2>&1
+          npx tsc > /dev/null 2>&1
+          node build/main.js --host 127.0.0.1 > /dev/null 2>&1 &
+          echo "POT_PID=$!" >> "$GITHUB_ENV"
           for attempt in {1..60}; do
             if curl --silent --fail http://127.0.0.1:4416/ping > /dev/null; then
-              echo "PROBE_TOKEN_SERVICE=PASS bind=127.0.0.1:4416 version=2.0.0"
+              echo "PROBE_TOKEN_SERVICE=PASS bind=127.0.0.1:4416 version=2.0.0 runtime=node22"
               exit 0
             fi
             sleep 2
@@ -77,7 +85,7 @@ jobs:
       - name: Run iOS simulator assertions
         run: |
           set -o pipefail
-          trap 'docker stop ytm-probe-bgutil > /dev/null 2>&1 || true' EXIT
+          trap 'if [[ -n "${POT_PID:-}" ]]; then kill "$POT_PID" > /dev/null 2>&1 || true; fi; if [[ -n "${POT_DIR:-}" && "$POT_DIR" == /tmp/* ]]; then rm -rf "$POT_DIR"; fi' EXIT
           set +e
           PROBE_TOKEN_GROUP=2a xcodebuild test \
             -project iosProbe/YTMProbeHost.xcodeproj \
@@ -118,4 +126,6 @@ jobs:
 
       - name: Stop loopback-only bgutil service
         if: always()
-        run: docker stop ytm-probe-bgutil > /dev/null 2>&1 || true
+        run: |
+          if [[ -n "${POT_PID:-}" ]]; then kill "$POT_PID" > /dev/null 2>&1 || true; fi
+          if [[ -n "${POT_DIR:-}" && "$POT_DIR" == /tmp/* ]]; then rm -rf "$POT_DIR"; fi
