@@ -1,0 +1,49 @@
+name: YTMProbeHost
+options:
+  bundleIdPrefix: io.github.hck5722
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    FRAMEWORK_SEARCH_PATHS: "$(inherited) ../probe/build/bin/iosSimulatorArm64/debugFramework"
+targets:
+  YTMProbeHost:
+    type: application
+    platform: iOS
+    sources:
+      - Host
+    dependencies:
+      - framework: ../probe/build/bin/iosSimulatorArm64/debugFramework/YTMProbe.framework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.hck5722.ytmprobe.host
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+  YTMProbeHostTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: YTMProbeHost
+      - framework: ../probe/build/bin/iosSimulatorArm64/debugFramework/YTMProbe.framework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.hck5722.ytmprobe.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+schemes:
+  YTMProbeHost:
+    build:
+      targets:
+        YTMProbeHost: all
+        YTMProbeHostTests: [test]
+    test:
+      gatherCoverageData: false
+      targets:
+        - YTMProbeHostTests
