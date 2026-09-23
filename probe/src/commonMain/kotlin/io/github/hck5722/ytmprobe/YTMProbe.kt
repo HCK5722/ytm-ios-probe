@@ -245,7 +245,12 @@ public class YTMProbe {
                 streamFailure = "${error::class.simpleName ?: "KotlinException"}: ${error.message ?: "no_message"}",
                 failureStage = stage,
                 failureType = error::class.simpleName ?: "KotlinException",
-                failureMessage = sanitizeFailureMessage(error.message),
+                failureMessage = sanitizeFailureMessage(
+                    listOfNotNull(
+                        error.toString(),
+                        error.cause?.toString(),
+                    ).joinToString(" | "),
+                ),
                 diagnostic = logLines.takeLast(120).joinToString("\n"),
             )
         } finally {

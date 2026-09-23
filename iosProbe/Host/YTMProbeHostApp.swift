@@ -22,6 +22,7 @@ final class ProbeModel: ObservableObject {
     @Published var playerStatus = "-"
     @Published var currentTime = "0"
     @Published var verdict = "PROBE_PLAY=RUNNING"
+    @Published var failureDetail = ""
 
     private var player: AVPlayer?
     private var rangeServer: LoopbackRangeServer?
@@ -54,7 +55,8 @@ final class ProbeModel: ObservableObject {
                 profile = result.audioProfile ?? "-"
                 transport = "-"
                 bytes = "-"
-                state = "Kotlin 失败阶段：\(failureStage)\n\(result.failureType ?? "KotlinException")\n\(result.failureMessage ?? "无错误消息")"
+                state = "Kotlin 失败阶段：\(failureStage)"
+                failureDetail = "\(result.failureType ?? "KotlinException")\n\(result.failureMessage ?? "无错误消息")"
                 verdict = "PROBE_PLAY=FAIL reason=kotlin_\(failureStage)"
                 return
             }
@@ -100,6 +102,7 @@ final class ProbeModel: ObservableObject {
                 ? "KotlinException 未提供消息"
                 : nsError.localizedDescription
             state = "运行错误：\(detail)\n\(nsError.domain) / \(nsError.code)"
+            failureDetail = detail
             verdict = "PROBE_PLAY=FAIL reason=runtime_error"
         }
     }
@@ -130,6 +133,14 @@ struct ProbeScreen: View {
             row("AVPlayer status", model.playerStatus)
             row("currentTime", model.currentTime)
             row("状态", model.state)
+            if !model.failureDetail.isEmpty {
+                Text(model.failureDetail)
+                    .font(.system(size: 13, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
             Text(model.verdict).font(.system(.headline, design: .monospaced)).padding(.top, 8)
             Button("开始探测") {
                 model.start()
