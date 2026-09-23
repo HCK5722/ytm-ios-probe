@@ -125,37 +125,49 @@ struct ProbeScreen: View {
     @StateObject private var model = ProbeModel()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("YT Music 真机播放探针").font(.title2.bold())
-            row("公网 IP / ISP", model.egress)
-            row("client / profile", "\(model.client) / \(model.profile)")
-            row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
-            row("AVPlayer status", model.playerStatus)
-            row("currentTime", model.currentTime)
-            row("状态", model.state)
-            if !model.failureDetail.isEmpty {
-                Text(model.failureDetail)
-                    .font(.system(size: 13, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("YT Music 真机播放探针")
+                    .font(.title2.bold())
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
+                row("公网 IP / ISP", model.egress)
+                row("client / profile", "\(model.client) / \(model.profile)")
+                row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
+                row("AVPlayer status", model.playerStatus)
+                row("currentTime", model.currentTime)
+                row("状态", model.state)
+                if !model.failureDetail.isEmpty {
+                    Text(model.failureDetail)
+                        .font(.system(size: 13, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(model.verdict)
+                    .font(.system(.headline, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("开始探测") {
+                    model.start()
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text(model.verdict).font(.system(.headline, design: .monospaced)).padding(.top, 8)
-            Button("开始探测") {
-                model.start()
-            }
-            .buttonStyle(.borderedProminent)
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
     }
 
     private func row(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+            Text(value)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
