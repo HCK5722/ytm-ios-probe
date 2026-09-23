@@ -126,36 +126,47 @@ struct ProbeScreen: View {
     @StateObject private var model = ProbeModel()
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("YT Music 真机播放探针")
-                    .font(.title2.bold())
-                    .fixedSize(horizontal: false, vertical: true)
-                row("公网 IP / ISP", model.egress)
-                row("client / profile", "\(model.client) / \(model.profile)")
-                row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
-                row("AVPlayer status", model.playerStatus)
-                row("currentTime", model.currentTime)
-                row("状态", model.state)
-                if !model.failureDetail.isEmpty {
-                    Text(model.failureDetail)
-                        .font(.system(size: 13, design: .monospaced))
-                        .textSelection(.enabled)
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("YT Music 真机播放探针")
+                            .font(.title2.bold())
+                            .fixedSize(horizontal: false, vertical: true)
+                            .id("probe-top")
+                        row("公网 IP / ISP", model.egress)
+                        row("client / profile", "\(model.client) / \(model.profile)")
+                        row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
+                        row("AVPlayer status", model.playerStatus)
+                        row("currentTime", model.currentTime)
+                        row("状态", model.state)
+                        if !model.failureDetail.isEmpty {
+                            Text(model.failureDetail)
+                                .font(.system(size: 13, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(model.verdict)
+                            .font(.system(.headline, design: .monospaced))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("开始探测") {
+                            model.start()
+                        }
+                        .buttonStyle(.borderedProminent)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
                 }
-                Text(model.verdict)
-                    .font(.system(.headline, design: .monospaced))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button("开始探测") {
-                    model.start()
+                .onChange(of: model.failureDetail) { _ in
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("probe-top", anchor: .top)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
     }
