@@ -28,7 +28,9 @@ final class PhaseZeroProbeTests: XCTestCase {
         print("PROBE_DIAG_SUMMARY \(result.streamDiagnostics)")
         result.streamRunSummaries.forEach { print("PROBE_DIAG_RUN \($0)") }
         if tokenGroup == "2a" {
-            result.diagnostic.split(separator: "\n").filter { $0.hasPrefix("PROBE_TOKEN ") }.forEach { print(String($0)) }
+            result.diagnostic.split(separator: "\n")
+                .filter { $0.hasPrefix("PROBE_TOKEN ") || $0.hasPrefix("PROBE_TOKEN_ATTEMPT ") }
+                .forEach { print(String($0)) }
         } else {
             result.diagnostic.split(separator: "\n").filter { $0.hasPrefix("PROBE_DIAG " ) }.forEach { print(String($0)) }
         }

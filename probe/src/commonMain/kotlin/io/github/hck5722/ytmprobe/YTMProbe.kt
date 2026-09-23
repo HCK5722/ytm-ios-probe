@@ -46,7 +46,16 @@ public class YTMProbe {
     ): ProbeResult {
         val logLines = mutableListOf<String>()
         val logger = InnerTubeLogger { event: InnerTubeLogEvent ->
-            logLines += "${event.level}/${event.tag}: ${event.message} ${event.details}"
+            if (tokenGroup == "2a" && event.message in TOKEN_DIAGNOSTIC_EVENTS) {
+                val details = event.details.orEmpty()
+                val clientName = details["client"] ?: "none"
+                val tokenPresent = details["tokenPresent"] ?: "unknown"
+                val profile = details["profile"]?.takeIf { it.matches(SAFE_LOG_VALUE) } ?: "none"
+                val mediaId = event.mediaId?.takeIf { it.matches(SAFE_LOG_VALUE) } ?: "none"
+                logLines += "PROBE_TOKEN_ATTEMPT client=" + clientName + " profile=" + profile +
+                    " videoId=" + mediaId + " event=" + event.message.replace(' ', '_') +
+                    " tokenPresent=" + tokenPresent
+            }
         }
         val client = createHttpClient(darwinEngine())
         val innerTube = InnerTube(client, logger = logger)
@@ -74,7 +83,7 @@ public class YTMProbe {
                 logger = logger,
             )
             extractor.prewarm()
-            val streamCandidates = listOf(videoId, "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")
+            val streamCandidates = listOf(videoId)
             var stream: com.metrolist.innertubex.extraction.ExtractedStream? = null
             var streamFailure: String? = null
             var streamAttempts = 0
@@ -85,7 +94,8 @@ public class YTMProbe {
                 try {
                     stream = extractor.extract(
                         videoId = candidate,
-                        hints = ContentHints(wantVideo = false),
+                        // Force the extractor's token retry path; this is a probe control, not track metadata.
+                        hints = ContentHints(isAgeRestricted = true, wantVideo = false),
                         audioQuality = AudioQuality.AUTO,
                     )
                     if (stream != null) break
@@ -173,6 +183,15 @@ public class YTMProbe {
 
     private companion object {
         private const val MAX_RESPONSE_BYTES: Int = 8 * 1024 * 1024
+        private val SAFE_LOG_VALUE = Regex("[A-Za-z0-9_.-]{1,80}")
+        private val TOKEN_DIAGNOSTIC_EVENTS =
+            setOf(
+                "tokenized request selected",
+                "token fetch completed",
+                "token binding rejected",
+                "tokenized response unavailable",
+                "playback-ready client response",
+            )
     }
 }
 
@@ -186,22 +205,25 @@ private class BgutilTokenProvider(
 
     override suspend fun getPoToken(videoId: String, visitorData: String, cookie: String?): PoTokenResult? {
         val started = TimeSource.Monotonic.markNow()
+        val callIndex = calls++
         return try {
             val player = requestToken(visitorData)
             val streaming = requestToken(videoId)
             val elapsedMs = started.elapsedNow().inWholeMilliseconds
             val valid = player.binding == visitorData && streaming.binding == videoId &&
                 player.token.isNotBlank() && streaming.token.isNotBlank() && player.token != streaming.token
-            logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
+            logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
             if (!valid) return null
             PoTokenResult(player.token, streaming.token, visitorData)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] tokenPresence=missing errorType=${error::class.simpleName ?: "unknown"}"
+            logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId tokenPresence=missing errorType=${error::class.simpleName ?: "unknown"}"
             null
         }
     }
+
+    private var calls = 0
 
     private suspend fun requestToken(binding: String): BoundToken {
         val response = client.post(endpoint) {

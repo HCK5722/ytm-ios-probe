@@ -94,7 +94,7 @@ jobs:
             -resultBundlePath PhaseTwoA.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             | tee xcodebuild-2a-private.log \
-            | grep -oE 'PROBE_[A-Z0-9_]+=.*|PROBE_TOKEN .*|PROBE_DIAG_(SUMMARY|RUN) .*' | tee xcodebuild-2a.log
+            | grep -oE 'PROBE_[A-Z0-9_]+=.*|PROBE_TOKEN .*|PROBE_TOKEN_ATTEMPT .*|PROBE_DIAG_(SUMMARY|RUN) .*' | tee xcodebuild-2a.log
           statuses=("${PIPESTATUS[@]}")
           status=${statuses[0]}
           rm -f xcodebuild-2a-private.log
@@ -106,6 +106,7 @@ jobs:
           : > safe-probe.log
           grep -E 'PROBE_[A-Z0-9_]+=' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
           grep -E 'PROBE_TOKEN ' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
+          grep -E 'PROBE_TOKEN_ATTEMPT ' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
           grep -E 'PROBE_DIAG_(SUMMARY|RUN) ' xcodebuild-2a.log >> safe-probe.log 2>/dev/null || true
           grep -E 'PROBE_1_DEPENDENCY_AND_LINK' gradle-build.log >> safe-probe.log 2>/dev/null || true
           {
