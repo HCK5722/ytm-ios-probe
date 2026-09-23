@@ -142,7 +142,9 @@ public class YTMProbe {
                         videoId = candidate,
                         // SABR preference is not evidence that the song is age-restricted.
                         hints = ContentHints(wantVideo = false, sabrFirst = forceSabr),
-                        audioQuality = AudioQuality.AUTO,
+                        // AVPlayer on iOS cannot consume the WebM/Opus stream selected by AUTO.
+                        // Prefer the MP4/AAC representation for the playback-chain probe.
+                        audioQuality = AudioQuality.MP4,
                     )
                     if (candidateStream == null) {
                         sampleTrackResults += "videoId=$candidate result=FAIL reason=NULL_STREAM"

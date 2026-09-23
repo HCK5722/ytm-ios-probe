@@ -63,7 +63,7 @@ final class ProbeModel: ObservableObject {
             }
             client = result.audioClient ?? "unknown"
             profile = result.audioProfile ?? "unknown"
-            transport = result.isSabr ? "SABR" : "HTTP"
+            transport = "\(result.isSabr ? "SABR" : "HTTP") / \(result.audioMimeType ?? "unknown")"
             bytes = "\(result.streamBytesPulled) / \(String(describing: result.audioExpectedBytes))"
             guard result.streamOk, result.isSabr, result.audioComplete,
                   let path = result.audioCachePath,
