@@ -56,7 +56,8 @@ final class ProbeModel: ObservableObject {
                 transport = "-"
                 bytes = "-"
                 state = "Kotlin 失败阶段：\(failureStage)"
-                failureDetail = "\(result.failureType ?? "KotlinException")\n\(result.failureMessage ?? "无错误消息")"
+                let diagnostic = result.diagnostic.isEmpty ? "" : "\n\n诊断：\n\(result.diagnostic)"
+                failureDetail = "\(result.failureType ?? "KotlinException")\n\(result.failureMessage ?? "无错误消息")\(diagnostic)"
                 verdict = "PROBE_PLAY=FAIL reason=kotlin_\(failureStage)"
                 return
             }

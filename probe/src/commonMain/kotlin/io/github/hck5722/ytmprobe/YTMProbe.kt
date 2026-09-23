@@ -15,6 +15,7 @@ import com.metrolist.innertubex.extraction.TokenProviderCapabilities
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.models.YouTubeClient
+import com.metrolist.innertubex.models.YouTubeLocale
 import com.metrolist.innertubex.sabr.ExperimentalSabrApi
 import com.metrolist.innertubex.sabr.SabrAudioStream
 import io.ktor.client.HttpClient
@@ -85,7 +86,22 @@ public class YTMProbe {
             val darwinBody = darwinResponse.bodyAsText()
 
             stage = "browse"
-            val browseResponse = innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
+            val detectedLocale = innerTube.locale
+            logLines += "PROBE_LOCALE gl=${detectedLocale.gl.ifBlank { "none" }} hl=${detectedLocale.hl.ifBlank { "none" }}"
+            val browseResponse = try {
+                innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
+            } catch (error: Throwable) {
+                val isHttp400 = error.message?.contains("browse failed with HTTP 400") == true
+                if (!isHttp400 || detectedLocale.gl == "US" && detectedLocale.hl == "en") throw error
+                val fallbackLocale = YouTubeLocale(gl = "US", hl = "en")
+                logLines += "PROBE_BROWSE_RETRY reason=http_400 locale=${fallbackLocale.gl}/${fallbackLocale.hl}"
+                innerTube.locale = fallbackLocale
+                try {
+                    innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
+                } finally {
+                    innerTube.locale = detectedLocale
+                }
+            }
             val browseBody = browseResponse.bodyAsTextLimited(MAX_RESPONSE_BYTES)
 
             stage = "search"
