@@ -9,6 +9,7 @@ private data class Options(
     val potUrl: String,
     val cookie: String?,
     val video: String?,
+    val sampleCount: Int,
 )
 
 public fun main(args: Array<String>) {
@@ -35,6 +36,7 @@ public fun main(args: Array<String>) {
             tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
             tokenServiceUrl = options.potUrl,
             candidateVideoIds = options.video?.let(::listOf) ?: DEFAULT_CANDIDATES,
+            sampleCount = options.sampleCount,
         )
     }
 
@@ -49,6 +51,9 @@ public fun main(args: Array<String>) {
             "client=${result.audioClient ?: "nil"} profile=${result.audioProfile ?: "nil"} sabr=${result.isSabr}",
     )
     println("PROBE_DIAG_SUMMARY ${safe(result.streamDiagnostics)}")
+    println("PROBE_4A1_STREAM_URL=${if (result.streamUrlObtained) "OBTAINED" else "MISSING"} bytesPulled=${result.streamBytesPulled} thresholdBytes=262144")
+    println("PROBE_4A2_SAMPLE=complete candidates=${result.sampleCandidates} passed=${result.samplePassed} failed=${result.sampleCandidates - result.samplePassed}")
+    result.sampleTrackResults.forEach { println("PROBE_4A2_TRACK ${safe(it)}") }
     result.streamRunSummaries.forEach { println("PROBE_DIAG_RUN ${safe(it)}") }
     result.diagnostic.lineSequence()
         .filter { it.startsWith("PROBE_TOKEN ") || it.startsWith("PROBE_TOKEN_ATTEMPT ") }
@@ -63,19 +68,22 @@ private fun parseOptions(args: Array<String>): Options {
     var potUrl = "http://127.0.0.1:4416/get_pot"
     var cookie: String? = null
     var video: String? = null
+    var sampleCount = 1
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
             arg.startsWith("--pot-url=") -> potUrl = arg.substringAfter('=')
             arg.startsWith("--video=") -> video = arg.substringAfter('=').takeIf(String::isNotBlank)
+            arg.startsWith("--sample-count=") -> sampleCount = arg.substringAfter('=').toInt()
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
         }
     }
     require(providers == "NONE" || providers == "EXTERNAL") { "--providers 只能是 NONE 或 EXTERNAL" }
+    require(sampleCount in 1..30) { "--sample-count 必须介于 1 和 30" }
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
-    return Options(providers, potUrl, cookie, video)
+    return Options(providers, potUrl, cookie, video, sampleCount)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")

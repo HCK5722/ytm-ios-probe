@@ -15,16 +15,23 @@ import com.metrolist.innertubex.extraction.TokenProviderCapabilities
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.models.YouTubeClient
+import com.metrolist.innertubex.sabr.ExperimentalSabrApi
+import com.metrolist.innertubex.sabr.SabrAudioStream
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.post
+import io.ktor.client.request.header
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.readAvailable
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
@@ -34,6 +41,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.collect
 import kotlin.time.TimeSource
 
 public class YTMProbe {
@@ -44,6 +53,9 @@ public class YTMProbe {
         tokenGroup: String = "baseline",
         tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
         candidateVideoIds: List<String> = listOf(videoId),
+        sampleCount: Int = 1,
+        collectFullAudio: Boolean = false,
+        forceSabr: Boolean = false,
     ): ProbeResult {
         val logLines = mutableListOf<String>()
         val logger = InnerTubeLogger { event: InnerTubeLogEvent ->
@@ -89,26 +101,46 @@ public class YTMProbe {
                 logger = logger,
             )
             extractor.prewarm()
-            val streamCandidates = candidateVideoIds.distinct().filter(String::isNotBlank).ifEmpty { listOf(videoId) }
+            val streamCandidates =
+                (candidateVideoIds + extractPlaylistVideoIds(browseBody))
+                    .distinct()
+                    .filter(String::isNotBlank)
+                    .take(sampleCount.coerceAtLeast(1))
+                    .ifEmpty { listOf(videoId) }
             var stream: com.metrolist.innertubex.extraction.ExtractedStream? = null
             var streamFailure: String? = null
             var streamAttempts = 0
             var lastStreamDiagnostics = "not_run"
             val streamRunSummaries = mutableListOf<String>()
+            val sampleTrackResults = mutableListOf<String>()
+            var selectedStreamBytesPulled = 0L
             for (candidate in streamCandidates) {
                 streamAttempts += 1
                 try {
-                    stream = extractor.extract(
+                    val candidateStream = extractor.extract(
                         videoId = candidate,
-                        // Force the extractor's token retry path; this is a probe control, not track metadata.
-                        hints = ContentHints(isAgeRestricted = true, wantVideo = false),
+                        hints = ContentHints(isAgeRestricted = true.takeIf { forceSabr }, wantVideo = false),
                         audioQuality = AudioQuality.AUTO,
                     )
-                    if (stream != null) break
+                    if (candidateStream == null) {
+                        sampleTrackResults += "videoId=$candidate result=FAIL reason=NULL_STREAM"
+                    } else {
+                        val pulledBytes = pullAudioPrefix(client, candidateStream)
+                        val pulled = pulledBytes >= MIN_SAMPLE_BYTES
+                        sampleTrackResults += "videoId=$candidate result=${if (pulled) "PASS" else "FAIL"} reason=${if (pulled) "NONE" else "STREAM_BYTES_SHORT"} bytesPulled=$pulledBytes client=${candidateStream.clientName ?: "unknown"} profile=${candidateStream.profileId ?: "unknown"} sabr=${candidateStream.sabrBootstrap != null}"
+                        if (stream == null) {
+                            stream = candidateStream
+                            selectedStreamBytesPulled = pulledBytes
+                        }
+                    }
                 } catch (error: Throwable) {
-                    streamFailure = "${error::class.simpleName}: ${error.message}"
-                    logLines += "STREAM_CANDIDATE_FAIL candidate=$candidate reason=$streamFailure"
                     val resolveError = error as? StreamResolveException
+                    streamFailure = if (resolveError != null) {
+                        "${error::class.simpleName}: ${resolveError.reason}"
+                    } else {
+                        error::class.simpleName ?: "UNKNOWN"
+                    }
+                    logLines += "STREAM_CANDIDATE_FAIL candidate=$candidate reason=$streamFailure"
                     if (resolveError != null) {
                         val diagnostics = resolveError.diagnostics
                         lastStreamDiagnostics = if (diagnostics != null) {
@@ -121,6 +153,7 @@ public class YTMProbe {
                         }
                         val runSummary = "candidate=$candidate exceptionReason=${resolveError.reason} $lastStreamDiagnostics"
                         streamRunSummaries += runSummary
+                        sampleTrackResults += "videoId=$candidate result=FAIL reason=${resolveError.reason}"
                         logLines += "PROBE_DIAG_RUN $runSummary"
                         if (tokenGroup != "2a") diagnostics?.attempts?.forEach { attempt ->
                             logLines += "PROBE_DIAG exceptionReason=${resolveError.reason} sawPlayable=unknown client=${attempt.clientName} profile=${attempt.profileId ?: "none"} userAgent=${attempt.userAgent} outcome=${attempt.outcome} tokenUnavailable=not_exposed requestFailure=not_exposed failurePresent=not_exposed"
@@ -128,10 +161,18 @@ public class YTMProbe {
                     } else {
                         val runSummary = "candidate=$candidate exceptionReason=NON_STREAM_RESOLVE $streamFailure"
                         streamRunSummaries += runSummary
+                        sampleTrackResults += "videoId=$candidate result=FAIL reason=${error::class.simpleName ?: "UNKNOWN"}"
                         logLines += "PROBE_DIAG_RUN $runSummary"
                     }
                 }
             }
+
+            val audioChunks = if (collectFullAudio && stream != null) collectAudio(client, stream!!) else emptyList()
+            val streamBytesPulled = if (audioChunks.isNotEmpty()) audioChunks.sumOf { it.size.toLong() } else selectedStreamBytesPulled
+            val audioExpectedBytes = stream?.contentLengthBytes
+            val audioComplete = collectFullAudio && audioChunks.isNotEmpty() &&
+                (audioExpectedBytes == null || audioExpectedBytes == streamBytesPulled)
+            val audioCachePath = if (audioComplete) cacheAudioChunks(audioChunks) else null
 
             val loginStatus: Int
             val loginBytes: Int
@@ -173,6 +214,15 @@ public class YTMProbe {
                 isSabr = stream?.sabrBootstrap != null || stream?.audioUrl?.startsWith("sabr://") == true,
                 streamDiagnostics = lastStreamDiagnostics,
                 streamRunSummaries = streamRunSummaries,
+                sampleCandidates = streamAttempts,
+                samplePassed = sampleTrackResults.count { "result=PASS" in it },
+                sampleTrackResults = sampleTrackResults,
+                streamBytesPulled = streamBytesPulled,
+                streamUrlObtained = stream != null && stream.audioUrl.isNotBlank(),
+                audioChunks = audioChunks,
+                audioExpectedBytes = audioExpectedBytes,
+                audioComplete = audioComplete,
+                audioCachePath = audioCachePath,
                 loginState = loginState,
                 loginStatus = loginStatus,
                 loginBytes = loginBytes,
@@ -197,6 +247,101 @@ public class YTMProbe {
             )
     }
 }
+
+@OptIn(ExperimentalSabrApi::class)
+private suspend fun collectAudio(
+    client: HttpClient,
+    stream: com.metrolist.innertubex.extraction.ExtractedStream,
+): List<ByteArray> {
+    val maximumBytes = MAX_PLAYBACK_CACHE_BYTES
+    val chunks = mutableListOf<ByteArray>()
+    var total = 0L
+    val bootstrap = stream.sabrBootstrap
+    if (bootstrap != null) {
+        SabrAudioStream(client, bootstrap).bytes().collect { chunk ->
+            check(total + chunk.size <= maximumBytes) { "SABR playback probe exceeded 64 MiB cache limit" }
+            total += chunk.size
+            chunks += chunk
+        }
+        return chunks
+    }
+    if (!stream.audioUrl.startsWith("https://")) return emptyList()
+    client.prepareGet(stream.audioUrl) {
+        stream.headers.forEach { (name, value) -> header(name, value) }
+    }.execute { response ->
+        if (!response.status.isSuccess()) return@execute
+        val channel = response.bodyAsChannel()
+        val buffer = ByteArray(64 * 1024)
+        while (total < maximumBytes) {
+            val read = channel.readAvailable(buffer, 0, minOf(buffer.size.toLong(), maximumBytes - total).toInt())
+            if (read < 0) break
+            if (read == 0) continue
+            chunks += buffer.copyOf(read)
+            total += read
+        }
+        check(total < maximumBytes) { "Direct playback probe exceeded 64 MiB cache limit" }
+        channel.cancel()
+    }
+    return chunks
+}
+
+internal expect fun cacheAudioChunks(chunks: List<ByteArray>): String?
+
+private fun extractPlaylistVideoIds(body: String): List<String> {
+    val ids = linkedSetOf<String>()
+    fun visit(element: kotlinx.serialization.json.JsonElement) {
+        when (element) {
+            is kotlinx.serialization.json.JsonObject -> element.forEach { (key, value) ->
+                if (key == "videoId" && value is kotlinx.serialization.json.JsonPrimitive) {
+                    value.contentOrNull?.takeIf { VIDEO_ID.matches(it) }?.let(ids::add)
+                }
+                visit(value)
+            }
+            is kotlinx.serialization.json.JsonArray -> element.forEach(::visit)
+            else -> Unit
+        }
+    }
+    runCatching { visit(Json.parseToJsonElement(body)) }
+    return ids.toList()
+}
+
+@OptIn(ExperimentalSabrApi::class)
+private suspend fun pullAudioPrefix(
+    client: HttpClient,
+    stream: com.metrolist.innertubex.extraction.ExtractedStream,
+): Long {
+    val targetBytes = MIN_SAMPLE_BYTES
+    val bootstrap = stream.sabrBootstrap
+    if (bootstrap != null) {
+        var count = 0L
+        SabrAudioStream(client, bootstrap).bytes()
+            .takeWhile { count < targetBytes }
+            .collect { chunk -> count += chunk.size }
+        return count
+    }
+    if (!stream.audioUrl.startsWith("https://")) return 0L
+    return client.prepareGet(stream.audioUrl) {
+        header("Range", "bytes=0-${targetBytes - 1}")
+        stream.headers.forEach { (name, value) -> header(name, value) }
+    }.execute { response ->
+        if (!response.status.isSuccess()) return@execute 0L
+        val channel = response.bodyAsChannel()
+        val buffer = ByteArray(32 * 1024)
+        var count = 0L
+        while (count < targetBytes) {
+            val read = channel.readAvailable(buffer, 0, minOf(buffer.size.toLong(), targetBytes - count).toInt())
+            if (read < 0) break
+            if (read == 0) continue
+            count += read
+        }
+        channel.cancel()
+        count
+    }
+}
+
+private val VIDEO_ID = Regex("[A-Za-z0-9_-]{11}")
+private const val MIN_SAMPLE_BYTES = 256L * 1024L
+private const val MAX_PLAYBACK_CACHE_BYTES = 64L * 1024L * 1024L
 
 private class BgutilTokenProvider(
     private val client: HttpClient,

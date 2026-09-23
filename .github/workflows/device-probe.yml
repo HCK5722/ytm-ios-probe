@@ -1,0 +1,61 @@
+name: iOS Device Playback Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-device-ipa:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Link iOS device framework
+        run: |
+          chmod +x gradlew
+          ./gradlew :probe:linkDebugFrameworkIosArm64 --stacktrace
+          test -d probe/build/bin/iosArm64/debugFramework/YTMProbe.framework
+
+      - name: Generate iOS device app project
+        run: |
+          brew install xcodegen
+          cd iosProbe
+          xcodegen generate
+
+      - name: Build unsigned arm64 device app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project iosProbe/YTMProbeHost.xcodeproj \
+            -scheme YTMProbeHost \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device-derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          APP='build/device-derived/Build/Products/Debug-iphoneos/YTMProbeHost.app'
+          test -d "$APP"
+          lipo -info "$APP/YTMProbeHost" | tee device-binary.log
+          grep -q arm64 device-binary.log
+          /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsLocalNetworking' "$APP/Info.plist" | grep -q true
+          mkdir -p build/ipa/Payload
+          ditto "$APP" build/ipa/Payload/YTMProbeHost.app
+          ditto -c -k --sequesterRsrc --keepParent build/ipa/Payload YTMProbe.ipa
+          unzip -l YTMProbe.ipa | grep 'Payload/YTMProbeHost.app/' | head
+
+      - name: Upload unsigned device IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytm-device-play-probe-${{ github.run_number }}
+          path: YTMProbe.ipa
+          if-no-files-found: error
+          retention-days: 7
