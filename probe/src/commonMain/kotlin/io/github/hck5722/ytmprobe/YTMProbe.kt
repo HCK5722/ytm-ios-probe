@@ -59,6 +59,7 @@ public class YTMProbe {
         forceSabr: Boolean = false,
     ): ProbeResult {
         val logLines = mutableListOf<String>()
+        var stage = "init"
         val logger = InnerTubeLogger { event: InnerTubeLogEvent ->
             if (tokenGroup == "2a" && event.message in TOKEN_DIAGNOSTIC_EVENTS) {
                 val details = event.details.orEmpty()
@@ -79,12 +80,15 @@ public class YTMProbe {
                 innerTube.cookie = normalizedCookie
                 innerTube.useLoginForBrowse = true
             }
+            stage = "darwin_http"
             val darwinResponse = client.get("https://music.youtube.com/")
             val darwinBody = darwinResponse.bodyAsText()
 
+            stage = "browse"
             val browseResponse = innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
             val browseBody = browseResponse.bodyAsTextLimited(MAX_RESPONSE_BYTES)
 
+            stage = "search"
             val searchResponse = innerTube.search(YouTubeClient.WEB_REMIX, query = "YouTube Music", setLogin = false)
             val searchBody = searchResponse.bodyAsTextLimited(MAX_RESPONSE_BYTES)
 
@@ -94,6 +98,7 @@ public class YTMProbe {
             } else {
                 null
             }
+            stage = "extractor_init"
             val extractor = InnerTubeExtractor(
                 configParser = YtConfigParserImpl(client, innerTube, logger = logger),
                 cipherService = cipher,
@@ -101,6 +106,7 @@ public class YTMProbe {
                 tokenProvider = externalTokenProvider,
                 logger = logger,
             )
+            stage = "extractor_prewarm"
             extractor.prewarm()
             val streamCandidates =
                 (candidateVideoIds + extractPlaylistVideoIds(browseBody))
@@ -117,6 +123,7 @@ public class YTMProbe {
             var selectedStreamBytesPulled = 0L
             for (candidate in streamCandidates) {
                 streamAttempts += 1
+                stage = "stream_extract:$candidate"
                 try {
                     val candidateStream = extractor.extract(
                         videoId = candidate,
@@ -168,6 +175,7 @@ public class YTMProbe {
                 }
             }
 
+            stage = "audio_collect"
             val audioChunks = if (collectFullAudio && stream != null) collectAudio(client, stream!!) else emptyList()
             val streamBytesPulled = if (audioChunks.isNotEmpty()) audioChunks.sumOf { it.size.toLong() } else selectedStreamBytesPulled
             val audioExpectedBytes = stream?.contentLengthBytes
@@ -183,6 +191,7 @@ public class YTMProbe {
                 loginBytes = 0
                 loginState = "SKIP_NO_CREDENTIAL"
             } else {
+                stage = "login"
                 val loginResponse = innerTube.browse(
                     client = YouTubeClient.WEB_REMIX,
                     browseId = "FEmusic_home",
@@ -229,6 +238,16 @@ public class YTMProbe {
                 loginBytes = loginBytes,
                 diagnostic = logLines.takeLast(120).joinToString("\n"),
             )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            return ProbeResult(
+                streamFailure = "${error::class.simpleName ?: "KotlinException"}: ${error.message ?: "no_message"}",
+                failureStage = stage,
+                failureType = error::class.simpleName ?: "KotlinException",
+                failureMessage = sanitizeFailureMessage(error.message),
+                diagnostic = logLines.takeLast(120).joinToString("\n"),
+            )
         } finally {
             innerTube.close()
             client.close()
@@ -248,6 +267,11 @@ public class YTMProbe {
             )
     }
 }
+
+private fun sanitizeFailureMessage(message: String?): String? = message
+    ?.replace(Regex("https?://\\S+"), "<url>")
+    ?.replace(Regex("(?i)cookie[=:]\\S+"), "cookie=<redacted>")
+    ?.take(240)
 
 @OptIn(ExperimentalSabrApi::class)
 private suspend fun collectAudio(

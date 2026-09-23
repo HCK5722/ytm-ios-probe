@@ -49,6 +49,15 @@ final class ProbeModel: ObservableObject {
                 collectFullAudio: true,
                 forceSabr: true
             )
+            if let failureStage = result.failureStage {
+                client = result.audioClient ?? "-"
+                profile = result.audioProfile ?? "-"
+                transport = "-"
+                bytes = "-"
+                state = "Kotlin 失败阶段：\(failureStage)\n\(result.failureType ?? "KotlinException")\n\(result.failureMessage ?? "无错误消息")"
+                verdict = "PROBE_PLAY=FAIL reason=kotlin_\(failureStage)"
+                return
+            }
             client = result.audioClient ?? "unknown"
             profile = result.audioProfile ?? "unknown"
             transport = result.isSabr ? "SABR" : "HTTP"
@@ -87,7 +96,10 @@ final class ProbeModel: ObservableObject {
             verdict = passed ? "PROBE_PLAY=PASS" : "PROBE_PLAY=FAIL reason=time_not_advancing"
         } catch {
             let nsError = error as NSError
-            state = "运行错误：\(nsError.domain) / \(nsError.code)"
+            let detail = nsError.localizedDescription == "The operation couldn’t be completed. (KotlinException error 0.)"
+                ? "KotlinException 未提供消息"
+                : nsError.localizedDescription
+            state = "运行错误：\(detail)\n\(nsError.domain) / \(nsError.code)"
             verdict = "PROBE_PLAY=FAIL reason=runtime_error"
         }
     }
