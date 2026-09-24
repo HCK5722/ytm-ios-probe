@@ -1,0 +1,46 @@
+name: Phase 0.5 KMP adapter
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "innertube-kmp/**"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/phase05-kmp.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  kmp-frameworks:
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: Compile desktop adapter
+        run: ./gradlew :innertube-kmp:compileKotlinDesktop --stacktrace
+      - name: Link iOS device framework
+        run: ./gradlew :innertube-kmp:linkReleaseFrameworkIosArm64 --stacktrace
+      - name: Link iOS simulator framework
+        run: ./gradlew :innertube-kmp:linkDebugFrameworkIosSimulatorArm64 --stacktrace
+      - name: Verify framework headers and archive
+        run: |
+          set -euo pipefail
+          test -f innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/YTMKit.h
+          test -f innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework/YTMKit.h
+          grep -q "YTMKit" innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/Info.plist
+          find innertube-kmp/build/bin -maxdepth 5 -name YTMKit.framework -print
+      - name: Upload frameworks
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytmkit-frameworks-${{ github.run_number }}
+          path: innertube-kmp/build/bin/**/YTMKit.framework
+          if-no-files-found: error
+          retention-days: 7

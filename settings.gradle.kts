@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "ytm-ios-probe"
 include(":probe")
+include(":innertube-kmp")

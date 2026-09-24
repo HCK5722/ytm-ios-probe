@@ -2,6 +2,14 @@
 
 Public GPL-3.0 probe for the iOS route described in `FORK-执行手册.md` section 12.8.
 
+## Phase 0.5 status
+
+The repository now contains the `innertube-kmp` module (`YTMKit.framework`) with `iosArm64`,
+`iosSimulatorArm64`, and `desktop` targets. The desktop target compiles locally on Windows;
+the iOS framework targets are built by the public macOS GitHub Actions workflow
+`Phase 0.5 KMP adapter`. Real YouTube stream checks remain device/home-network checks; CI is
+used for compilation, linking, and headers only.
+
 The workflow records assertions for:
 
 1. Kotlin/Native dependency resolution and iOS framework linking.
