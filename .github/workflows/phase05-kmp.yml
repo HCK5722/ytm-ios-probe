@@ -36,8 +36,10 @@ jobs:
         run: |
           set -euo pipefail
           find innertube-kmp/build/bin -maxdepth 5 -name YTMKit.framework -print
-          test -f innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/YTMKit.h
-          test -f innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework/YTMKit.h
+          find innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework -maxdepth 2 -type f -print
+          find innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework -maxdepth 2 -type f -print
+          test -f innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/Headers/YTMKit.h
+          test -f innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework/Headers/YTMKit.h
           test -f innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/Info.plist
           test -f innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework/Info.plist
           test -f innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/YTMKit
