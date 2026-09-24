@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import YTMProbe
+import YTMKit
 
 @main
 struct YTMProbeHostApp: App {
@@ -23,25 +24,37 @@ final class ProbeModel: ObservableObject {
     @Published var currentTime = "0"
     @Published var verdict = "PROBE_PLAY=RUNNING"
     @Published var failureDetail = ""
+    @Published var items: [ItemDTO] = []
+    @Published var playlistTitle = ""
 
     private var player: AVPlayer?
     private var rangeServer: LoopbackRangeServer?
-    private var started = false
+    private let kit = YTMKit()
+    private var running = false
 
-    func start() {
-        guard !started else { return }
-        started = true
-        Task { await run() }
+    func start(videoId: String? = nil) {
+        guard !running else { return }
+        running = true
+        Task {
+            await run(videoId: videoId)
+            running = false
+        }
     }
 
-    private func run() async {
+    private func run(videoId requestedVideoId: String?) async {
         await readEgress()
         do {
+            if items.isEmpty {
+                let playlist = try await kit.playlist(id: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62")
+                playlistTitle = playlist.title
+                items = Array(playlist.items.prefix(12))
+            }
+            let selectedVideoId = requestedVideoId ?? items.first?.id ?? "DcDbKDAb7go"
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
             let result = try await YTMProbe().run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
-                videoId: "DcDbKDAb7go",
+                videoId: selectedVideoId,
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
@@ -144,6 +157,27 @@ struct ProbeScreen: View {
                             .font(.title2.bold())
                             .fixedSize(horizontal: false, vertical: true)
                             .id("probe-top")
+                        if !model.items.isEmpty {
+                            Text(model.playlistTitle.isEmpty ? "歌单条目" : model.playlistTitle)
+                                .font(.headline)
+                            ForEach(model.items, id: \.id) { item in
+                                Button {
+                                    model.start(videoId: item.id)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.title)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        if !item.subtitle.isEmpty {
+                                            Text(item.subtitle)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
                         row("公网 IP / ISP", model.egress)
                         row("client / profile", "\(model.client) / \(model.profile)")
                         row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
@@ -161,7 +195,7 @@ struct ProbeScreen: View {
                             .font(.system(.headline, design: .monospaced))
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Button("开始探测") {
+                        Button("加载歌单并播放第一首") {
                             model.start()
                         }
                         .buttonStyle(.borderedProminent)

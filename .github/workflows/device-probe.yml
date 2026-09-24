@@ -24,6 +24,8 @@ jobs:
           chmod +x gradlew
           ./gradlew :probe:linkReleaseFrameworkIosArm64 --stacktrace
           test -d probe/build/bin/iosArm64/releaseFramework/YTMProbe.framework
+          ./gradlew :innertube-kmp:linkReleaseFrameworkIosArm64 --stacktrace
+          test -d innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework
 
       - name: Generate iOS device app project
         run: |

@@ -23,10 +23,12 @@ targets:
     dependencies:
       - framework: ../probe/build/bin/iosArm64/releaseFramework/YTMProbe.framework
         embed: false
+      - framework: ../innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.hck5722.ytmprobe.host
-        FRAMEWORK_SEARCH_PATHS: "$(inherited) ../probe/build/bin/iosArm64/releaseFramework"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) ../probe/build/bin/iosArm64/releaseFramework ../innertube-kmp/build/bin/iosArm64/releaseFramework"
         CODE_SIGNING_ALLOWED: NO
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: iphoneos
