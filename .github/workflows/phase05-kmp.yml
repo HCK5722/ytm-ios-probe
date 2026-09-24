@@ -38,7 +38,8 @@ jobs:
           test -f innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/YTMKit.h
           test -f innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework/YTMKit.h
           plutil -p innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/Info.plist
-          plutil -extract CFBundleName raw -o - innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/Info.plist | grep -qx "YTMKit"
+          test -x innertube-kmp/build/bin/iosArm64/releaseFramework/YTMKit.framework/YTMKit
+          test -x innertube-kmp/build/bin/iosSimulatorArm64/debugFramework/YTMKit.framework/YTMKit
           find innertube-kmp/build/bin -maxdepth 5 -name YTMKit.framework -print
       - name: Upload frameworks
         uses: actions/upload-artifact@v4
