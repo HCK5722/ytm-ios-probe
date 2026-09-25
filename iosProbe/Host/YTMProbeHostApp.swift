@@ -61,23 +61,19 @@ final class ProbeModel: ObservableObject {
             object: nil,
             queue: .main,
         ) { [weak self] notification in
-            Task { @MainActor in self?.handleInterruption(notification) }
+            let typeRaw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let optionsRaw = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+            Task { @MainActor in self?.handleInterruption(typeRaw: typeRaw, optionsRaw: optionsRaw) }
         }
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main,
         ) { [weak self] notification in
-            Task { @MainActor in self?.handleRouteChange(notification) }
+            let reasonRaw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor in self?.handleRouteChange(reasonRaw: reasonRaw) }
         }
         Task { await readEgress() }
-    }
-
-    deinit {
-        if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
-        if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
     }
 
     func start(videoId: String? = nil) {
@@ -342,9 +338,11 @@ final class ProbeModel: ObservableObject {
             forInterval: CMTime(seconds: 1, preferredTimescale: 600),
             queue: .main,
         ) { [weak self] time in
-            guard let self else { return }
-            self.currentTime = String(format: "%.1f s", time.seconds)
-            self.refreshNowPlaying()
+            let seconds = time.seconds
+            Task { @MainActor in
+                self?.currentTime = String(format: "%.1f s", seconds)
+                self?.refreshNowPlaying()
+            }
         }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
@@ -405,19 +403,19 @@ final class ProbeModel: ObservableObject {
         }
     }
 
-    private func handleInterruption(_ notification: Notification) {
-        guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+    private func handleInterruption(typeRaw: UInt?, optionsRaw: UInt?) {
+        guard let typeValue = typeRaw,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
         if type == .began { player?.pause(); isPlaying = false }
         if type == .ended,
-           let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+           let optionsValue = optionsRaw,
            AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume) {
             player?.play(); isPlaying = true; refreshNowPlaying()
         }
     }
 
-    private func handleRouteChange(_ notification: Notification) {
-        guard let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+    private func handleRouteChange(reasonRaw: UInt?) {
+        guard let reasonValue = reasonRaw,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
         if reason == .oldDeviceUnavailable { player?.pause(); isPlaying = false; refreshNowPlaying() }
     }
