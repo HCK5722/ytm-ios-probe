@@ -72,7 +72,7 @@ public class YTMKit {
     }
 
     public suspend fun search(query: String): List<ItemDTO> = try {
-        itemsFromJson(searchWithLocaleFallback(query).bodyAsText())
+        itemsFromJson(searchWithLocaleFallback(query).bodyAsText(), videoOnly = false)
     } catch (_: Throwable) {
         emptyList()
     }
@@ -83,7 +83,7 @@ public class YTMKit {
             id = id,
             title = firstText(body, "title") ?: id,
             author = firstText(body, "subtitle") ?: "",
-            items = itemsFromJson(body),
+            items = itemsFromJson(body, videoOnly = true),
         )
     } catch (error: Throwable) {
         PlaylistDTO(id = id, title = id, error = safeError(error))
@@ -144,18 +144,20 @@ private fun safeError(error: Throwable): String =
         .replace(Regex("https?://\\S+"), "<url>")
         .take(500)
 
-private fun itemsFromJson(body: String): List<ItemDTO> {
+private fun itemsFromJson(body: String, videoOnly: Boolean = false): List<ItemDTO> {
     val result = ArrayList<ItemDTO>()
     fun visit(element: JsonElement) {
         when (element) {
             is JsonObject -> {
-                val id = element["videoId"]?.jsonPrimitive?.contentOrNull
-                    ?: element["playlistId"]?.jsonPrimitive?.contentOrNull
-                    ?: element["browseId"]?.jsonPrimitive?.contentOrNull
-                val title = element["title"]?.let(::firstText)
-                    ?: element["headline"]?.let(::firstText)
-                    ?: ""
-                if (!id.isNullOrBlank() && title.isNotBlank()) result += ItemDTO(id = id, title = title)
+                val id = firstId(element, videoOnly)
+                val title = firstTextForKeys(element, listOf("title", "headline")) ?: ""
+                val subtitle = firstTextForKeys(
+                    element,
+                    listOf("subtitle", "longBylineText", "shortBylineText", "secondaryText", "ownerText"),
+                ).orEmpty()
+                if (!id.isNullOrBlank() && title.isNotBlank()) {
+                    result += ItemDTO(id = id, title = title, subtitle = subtitle)
+                }
                 element.values.forEach(::visit)
             }
             is JsonArray -> element.forEach(::visit)
@@ -167,8 +169,28 @@ private fun itemsFromJson(body: String): List<ItemDTO> {
 }
 
 private fun sectionsFromJson(body: String): List<SectionDTO> {
-    val items = itemsFromJson(body)
+    val items = itemsFromJson(body, videoOnly = false)
     return if (items.isEmpty()) emptyList() else listOf(SectionDTO("Home", items))
+}
+
+private fun firstId(element: JsonElement, videoOnly: Boolean): String? = when (element) {
+    is JsonObject -> {
+        element["videoId"]?.jsonPrimitive?.contentOrNull
+            ?: if (!videoOnly) {
+                element["playlistId"]?.jsonPrimitive?.contentOrNull
+                    ?: element["browseId"]?.jsonPrimitive?.contentOrNull
+            } else null
+            ?: element.values.firstNotNullOfOrNull { firstId(it, videoOnly) }
+    }
+    is JsonArray -> element.firstNotNullOfOrNull { firstId(it, videoOnly) }
+    else -> null
+}
+
+private fun firstTextForKeys(element: JsonElement, keys: List<String>): String? = when (element) {
+    is JsonObject -> keys.firstNotNullOfOrNull { key -> element[key]?.let(::firstText) }
+        ?: element.values.firstNotNullOfOrNull { firstTextForKeys(it, keys) }
+    is JsonArray -> element.firstNotNullOfOrNull { firstTextForKeys(it, keys) }
+    else -> null
 }
 
 private fun firstText(body: String, key: String): String? =

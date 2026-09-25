@@ -20,6 +20,8 @@ targets:
       properties:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        UIBackgroundModes:
+          - audio
     dependencies:
       - framework: ../probe/build/bin/iosArm64/releaseFramework/YTMProbe.framework
         embed: false
