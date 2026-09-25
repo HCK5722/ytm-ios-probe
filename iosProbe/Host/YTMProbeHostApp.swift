@@ -35,7 +35,6 @@ final class ProbeModel: ObservableObject {
     @Published var preparing = false
 
     private struct PreparedAudio {
-        let index: Int
         let data: Data
         let mimeType: String
         let client: String
@@ -50,8 +49,6 @@ final class ProbeModel: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeObserver: NSObjectProtocol?
     private var currentTask: Task<Void, Never>?
-    private var preloadTask: Task<Void, Never>?
-    private var preloaded: PreparedAudio?
     private let kit = YTMKit()
     private var configuredAudio = false
 
@@ -131,8 +128,8 @@ final class ProbeModel: ObservableObject {
             return
         }
         currentTask?.cancel()
+        stopCurrentPlayer()
         currentIndex = index
-        preloaded = preloaded?.index == index ? preloaded : nil
         failureDetail = ""
         state = "准备：\(items[index].title)"
         verdict = "PROBE_PLAY=RUNNING"
@@ -146,13 +143,7 @@ final class ProbeModel: ObservableObject {
         defer { preparing = false }
         guard items.indices.contains(index) else { return }
         let item = items[index]
-        let prepared: PreparedAudio?
-        if let preloaded, preloaded.index == index {
-            prepared = preloaded
-            self.preloaded = nil
-        } else {
-            prepared = await fetchAudio(for: item, index: index, updateUI: true)
-        }
+        let prepared = await fetchAudio(for: item, updateUI: true)
         guard let prepared else {
             // Do not hide the first real failure by cascading through the
             // entire queue. A failed SABR request needs to remain visible so
@@ -170,7 +161,6 @@ final class ProbeModel: ObservableObject {
                 stopAfterFailure(index: index)
                 return
             }
-            stopCurrentPlayer()
             let server = LoopbackRangeServer(data: prepared.data, mimeType: prepared.mimeType)
             rangeServer = server
             do {
@@ -205,7 +195,6 @@ final class ProbeModel: ObservableObject {
             transport = "SABR / \(prepared.mimeType)"
             bytes = "\(prepared.bytes)"
             verdict = "PROBE_PLAY=PASS"
-            preloadNextIfNeeded(after: index)
         } catch {
             state = "播放初始化失败"
             let nsError = error as NSError
@@ -215,7 +204,7 @@ final class ProbeModel: ObservableObject {
         }
     }
 
-    private func fetchAudio(for item: ItemDTO, index: Int, updateUI: Bool) async -> PreparedAudio? {
+    private func fetchAudio(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
         do {
             let result = try await YTMProbe().run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
@@ -248,7 +237,6 @@ final class ProbeModel: ObservableObject {
             }
             try? FileManager.default.removeItem(atPath: path)
             return PreparedAudio(
-                index: index,
                 data: data,
                 mimeType: result.audioMimeType ?? "audio/mp4",
                 client: result.audioClient ?? "unknown",
@@ -265,18 +253,6 @@ final class ProbeModel: ObservableObject {
         }
     }
 
-    private func preloadNextIfNeeded(after index: Int) {
-        guard let next = nextIndex(after: index), preloaded?.index != next else { return }
-        preloadTask?.cancel()
-        let item = items[next]
-        preloadTask = Task { [weak self] in
-            guard let self else { return }
-            let payload = await self.fetchAudio(for: item, index: next, updateUI: false)
-            guard !Task.isCancelled else { return }
-            self.preloaded = payload
-        }
-    }
-
     private func nextIndex(after index: Int) -> Int? {
         if shuffleEnabled {
             let candidates = items.indices.filter { $0 != index }
@@ -288,8 +264,7 @@ final class ProbeModel: ObservableObject {
 
     private func stopAfterFailure(index: Int) {
         currentTask?.cancel()
-        preloadTask?.cancel()
-        preloaded = nil
+        stopCurrentPlayer()
         isPlaying = false
         state = "播放失败，已停在第 \(index + 1) 首"
     }
@@ -396,7 +371,17 @@ final class ProbeModel: ObservableObject {
     }
 
     private func stopCurrentPlayer() {
+        if let timeObserver, let player {
+            player.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
         player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
         isPlaying = false
         rangeServer = nil
     }
