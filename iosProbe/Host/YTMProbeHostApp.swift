@@ -45,7 +45,13 @@ final class ProbeModel: ObservableObject {
         await readEgress()
         do {
             if items.isEmpty {
-                let playlist = try await kit.playlist(id: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62")
+                let playlist = await kit.playlist(id: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62")
+                if !playlist.error.isEmpty {
+                    state = "歌单加载失败"
+                    failureDetail = "YTMKit.playlist: \(playlist.error)"
+                    verdict = "PROBE_SLICE=FAIL reason=playlist"
+                    return
+                }
                 playlistTitle = playlist.title
                 items = Array(playlist.items.prefix(12))
             }

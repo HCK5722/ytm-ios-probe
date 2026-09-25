@@ -37,6 +37,7 @@ public data class PlaylistDTO(
     public val title: String,
     public val author: String = "",
     public val items: List<ItemDTO> = emptyList(),
+    public val error: String = "",
 )
 
 public data class StreamInfoDTO(
@@ -48,6 +49,7 @@ public data class StreamInfoDTO(
     public val isSabr: Boolean,
     public val client: String,
     public val profile: String,
+    public val error: String = "",
 )
 
 /** Narrow façade for the first vertical slice. */
@@ -62,23 +64,31 @@ public class YTMKit {
         )
     }
 
-    public suspend fun home(): List<SectionDTO> =
+    public suspend fun home(): List<SectionDTO> = try {
         sectionsFromJson(innerTube.browse(YouTubeClient.WEB_REMIX, "FEmusic_home").bodyAsText())
+    } catch (_: Throwable) {
+        emptyList()
+    }
 
-    public suspend fun search(query: String): List<ItemDTO> =
+    public suspend fun search(query: String): List<ItemDTO> = try {
         itemsFromJson(innerTube.search(YouTubeClient.WEB_REMIX, query = query).bodyAsText())
+    } catch (_: Throwable) {
+        emptyList()
+    }
 
-    public suspend fun playlist(id: String): PlaylistDTO {
+    public suspend fun playlist(id: String): PlaylistDTO = try {
         val body = innerTube.browse(YouTubeClient.WEB_REMIX, "VL$id").bodyAsText()
-        return PlaylistDTO(
+        PlaylistDTO(
             id = id,
             title = firstText(body, "title") ?: id,
             author = firstText(body, "subtitle") ?: "",
             items = itemsFromJson(body),
         )
+    } catch (error: Throwable) {
+        PlaylistDTO(id = id, title = id, error = safeError(error))
     }
 
-    public suspend fun stream(videoId: String): StreamInfoDTO {
+    public suspend fun stream(videoId: String): StreamInfoDTO = try {
         extractor.prewarm()
         val stream = requireNotNull(
             extractor.extract(
@@ -87,7 +97,7 @@ public class YTMKit {
                 audioQuality = AudioQuality.MP4,
             ),
         ) { "No playable stream for $videoId" }
-        return StreamInfoDTO(
+        StreamInfoDTO(
             videoId = videoId,
             mimeType = stream.mimeType.orEmpty(),
             codec = stream.codecs.orEmpty(),
@@ -97,6 +107,8 @@ public class YTMKit {
             client = stream.clientName,
             profile = stream.profileId,
         )
+    } catch (error: Throwable) {
+        StreamInfoDTO(videoId, "", "", 0L, -1, false, "", "", safeError(error))
     }
 
     public fun close() {
@@ -104,6 +116,11 @@ public class YTMKit {
         client.close()
     }
 }
+
+private fun safeError(error: Throwable): String =
+    (error.message ?: error::class.simpleName ?: "Unknown error")
+        .replace(Regex("https?://\\S+"), "<url>")
+        .take(500)
 
 private fun itemsFromJson(body: String): List<ItemDTO> {
     val result = ArrayList<ItemDTO>()
