@@ -161,11 +161,27 @@ final class ProbeModel: ObservableObject {
             return
         }
         do {
-            try configureAudioSession()
+            do {
+                try configureAudioSession()
+            } catch {
+                state = "音频会话初始化失败"
+                failureDetail = "stage=audio_session\n\((error as NSError).domain) code=\((error as NSError).code)\n\((error as NSError).localizedDescription)"
+                verdict = "PROBE_PLAY=FAIL reason=audio_session"
+                stopAfterFailure(index: index)
+                return
+            }
             stopCurrentPlayer()
-            let server = try LoopbackRangeServer(data: prepared.data, mimeType: prepared.mimeType)
+            let server = LoopbackRangeServer(data: prepared.data, mimeType: prepared.mimeType)
             rangeServer = server
-            try server.start()
+            do {
+                try server.start()
+            } catch {
+                state = "本地音频服务启动失败"
+                failureDetail = "stage=loopback\n\((error as NSError).localizedDescription)"
+                verdict = "PROBE_PLAY=FAIL reason=loopback"
+                stopAfterFailure(index: index)
+                return
+            }
             let item = AVPlayerItem(url: server.url)
             let newPlayer = AVPlayer(playerItem: item)
             player = newPlayer
@@ -192,7 +208,8 @@ final class ProbeModel: ObservableObject {
             preloadNextIfNeeded(after: index)
         } catch {
             state = "播放初始化失败"
-            failureDetail = (error as NSError).localizedDescription
+            let nsError = error as NSError
+            failureDetail = "stage=player\n\(nsError.domain) code=\(nsError.code)\n\(nsError.localizedDescription)"
             verdict = "PROBE_PLAY=FAIL reason=player_setup"
             stopAfterFailure(index: index)
         }
@@ -340,7 +357,11 @@ final class ProbeModel: ObservableObject {
     private func configureAudioSession() throws {
         guard !configuredAudio else { return }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowAirPlay])
+        // iOS 27 rejects the previous Bluetooth/AirPlay option combination
+        // on some routes with OSStatus -50 (paramErr). Start with the
+        // minimal playback category; route support can be added after the
+        // core local playback path is stable.
+        try session.setCategory(.playback, mode: .default, options: [])
         try session.setActive(true)
         configuredAudio = true
     }
