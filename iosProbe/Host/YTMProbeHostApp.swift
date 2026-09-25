@@ -32,6 +32,7 @@ final class ProbeModel: ObservableObject {
     @Published var repeatEnabled = false
     @Published var coverageRunning = false
     @Published var coverageText = ""
+    @Published var preparing = false
 
     private struct PreparedAudio {
         let index: Int
@@ -125,18 +126,24 @@ final class ProbeModel: ObservableObject {
 
     private func play(index: Int) {
         guard items.indices.contains(index) else { return }
+        guard !coverageRunning else {
+            state = "覆盖率自检进行中，请等待完成后再播放"
+            return
+        }
         currentTask?.cancel()
         currentIndex = index
         preloaded = preloaded?.index == index ? preloaded : nil
         failureDetail = ""
         state = "准备：\(items[index].title)"
         verdict = "PROBE_PLAY=RUNNING"
+        preparing = true
         currentTask = Task { [weak self] in
             await self?.prepareAndPlay(index: index)
         }
     }
 
     private func prepareAndPlay(index: Int) async {
+        defer { preparing = false }
         guard items.indices.contains(index) else { return }
         let item = items[index]
         let prepared: PreparedAudio?
@@ -147,7 +154,10 @@ final class ProbeModel: ObservableObject {
             prepared = await fetchAudio(for: item, index: index, updateUI: true)
         }
         guard let prepared else {
-            await skipFailedTrack(from: index)
+            // Do not hide the first real failure by cascading through the
+            // entire queue. A failed SABR request needs to remain visible so
+            // we can fix the transport/client choice from its diagnostics.
+            stopAfterFailure(index: index)
             return
         }
         do {
@@ -168,7 +178,7 @@ final class ProbeModel: ObservableObject {
             guard item.status == .readyToPlay else {
                 state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 未 readyToPlay"
                 verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
-                await skipFailedTrack(from: index)
+                stopAfterFailure(index: index)
                 return
             }
             newPlayer.play()
@@ -184,7 +194,7 @@ final class ProbeModel: ObservableObject {
             state = "播放初始化失败"
             failureDetail = (error as NSError).localizedDescription
             verdict = "PROBE_PLAY=FAIL reason=player_setup"
-            await skipFailedTrack(from: index)
+            stopAfterFailure(index: index)
         }
     }
 
@@ -259,11 +269,12 @@ final class ProbeModel: ObservableObject {
         return items.indices.contains(next) ? next : (repeatEnabled ? index : nil)
     }
 
-    private func skipFailedTrack(from index: Int) async {
-        guard let next = nextIndex(after: index), next != index else { return }
-        state = "跳过失败曲目，准备下一首"
-        try? await Task.sleep(for: .milliseconds(250))
-        play(index: next)
+    private func stopAfterFailure(index: Int) {
+        currentTask?.cancel()
+        preloadTask?.cancel()
+        preloaded = nil
+        isPlaying = false
+        state = "播放失败，已停在第 \(index + 1) 首"
     }
 
     func next() { if let next = nextIndex(after: currentIndex) { play(index: next) } }
@@ -282,13 +293,16 @@ final class ProbeModel: ObservableObject {
     }
 
     func runCoverage() {
-        guard !coverageRunning else { return }
+        guard !coverageRunning, !isPlaying, !preparing else {
+            coverageText = "请先停止当前播放，再运行覆盖率自检"
+            return
+        }
         coverageRunning = true
         coverageText = "覆盖率自检进行中..."
         Task { [weak self] in
             guard let self else { return }
+            defer { self.coverageRunning = false }
             if self.items.isEmpty, !(await self.loadPlaylist()) {
-                self.coverageRunning = false
                 return
             }
             let sample = Array(self.items.prefix(30))
@@ -320,7 +334,6 @@ final class ProbeModel: ObservableObject {
             let profileText = profiles.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
             let failureText = failures.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
             self.coverageText = "覆盖率：\(passed)/\(sample.count)\nprofile：\(profileText.isEmpty ? "无" : profileText)\n失败：\(failureText.isEmpty ? "无" : failureText)"
-            self.coverageRunning = false
         }
     }
 
