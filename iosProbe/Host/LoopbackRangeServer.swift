@@ -37,7 +37,10 @@ final class LoopbackRangeServer: @unchecked Sendable {
         }
         guard named == 0 else { throw ServerError.bind }
         let port = UInt16(bigEndian: actual.sin_port)
-        url = URL(string: "http://127.0.0.1:\(port)/audio.webm")!
+        // Keep the URL suffix aligned with the MP4/AAC stream selected by
+        // innertubex. AVPlayer may use the path extension in addition to the
+        // Content-Type header when deciding which demuxer to load.
+        url = URL(string: "http://127.0.0.1:\(port)/audio.mp4")!
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.acceptLoop() }
     }
 

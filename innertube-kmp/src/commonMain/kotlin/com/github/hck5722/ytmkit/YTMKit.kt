@@ -149,15 +149,8 @@ private fun itemsFromJson(body: String, videoOnly: Boolean = false): List<ItemDT
     fun visit(element: JsonElement) {
         when (element) {
             is JsonObject -> {
-                val id = firstId(element, videoOnly)
-                val title = firstTextForKeys(element, listOf("title", "headline")) ?: ""
-                val subtitle = firstTextForKeys(
-                    element,
-                    listOf("subtitle", "longBylineText", "shortBylineText", "secondaryText", "ownerText"),
-                ).orEmpty()
-                if (!id.isNullOrBlank() && title.isNotBlank()) {
-                    result += ItemDTO(id = id, title = title, subtitle = subtitle)
-                }
+                val renderer = element["musicResponsiveListItemRenderer"] as? JsonObject
+                if (renderer != null) parseResponsiveItem(renderer, result)
                 element.values.forEach(::visit)
             }
             is JsonArray -> element.forEach(::visit)
@@ -166,6 +159,52 @@ private fun itemsFromJson(body: String, videoOnly: Boolean = false): List<ItemDT
     }
     runCatching { visit(Json.parseToJsonElement(body)) }
     return result.distinctBy { it.id }.take(100)
+}
+
+/** Parse one musicResponsiveListItemRenderer as a unit. Never combine fields
+ * from sibling/menu renderers: that was the source of "Sort" and
+ * "Save this for later" appearing as song titles. */
+private fun parseResponsiveItem(renderer: JsonObject, result: MutableList<ItemDTO>) {
+    val overlay = renderer["overlay"]
+    val id = findVideoId(overlay)
+        ?: findVideoId(renderer["navigationEndpoint"])
+        ?: findVideoId(renderer["endpoint"])
+    val flexColumns = renderer["flexColumns"] as? JsonArray
+    val title = flexColumns?.getOrNull(0)?.let(::columnText).orEmpty()
+    if (id.isNullOrBlank() || title.isBlank() || title in IGNORED_MENU_TITLES) return
+    val subtitle = flexColumns?.getOrNull(1)?.let(::columnText).orEmpty()
+    val thumbnail = findThumbnail(renderer)
+    result += ItemDTO(id = id, title = title, subtitle = subtitle, thumbnailUrl = thumbnail)
+}
+
+private val IGNORED_MENU_TITLES = setOf(
+    "Sort",
+    "Save this for later",
+    "Remove from library",
+    "Add to queue",
+)
+
+private fun columnText(element: JsonElement): String =
+    (element as? JsonObject)?.get("musicResponsiveListItemFlexColumnRenderer")
+        ?.let { firstText(it) }.orEmpty()
+
+private fun findVideoId(element: JsonElement?): String? = when (element) {
+    is JsonObject -> {
+        element["watchEndpoint"]?.let { endpoint ->
+            (endpoint as? JsonObject)?.get("videoId")?.jsonPrimitive?.contentOrNull
+        } ?: element["playNavigationEndpoint"]?.let(::findVideoId)
+            ?: element["videoId"]?.jsonPrimitive?.contentOrNull
+            ?: element.values.firstNotNullOfOrNull(::findVideoId)
+    }
+    is JsonArray -> element.firstNotNullOfOrNull(::findVideoId)
+    else -> null
+}
+
+private fun findThumbnail(element: JsonElement?): String? = when (element) {
+    is JsonObject -> element["url"]?.jsonPrimitive?.contentOrNull
+        ?: element.values.firstNotNullOfOrNull(::findThumbnail)
+    is JsonArray -> element.firstNotNullOfOrNull(::findThumbnail)
+    else -> null
 }
 
 private fun sectionsFromJson(body: String): List<SectionDTO> {
