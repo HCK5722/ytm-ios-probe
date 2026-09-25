@@ -7,6 +7,7 @@ import com.metrolist.innertubex.extraction.ContentHints
 import com.metrolist.innertubex.extraction.InnerTubeExtractor
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.models.YouTubeClient
+import com.metrolist.innertubex.models.YouTubeLocale
 import io.ktor.client.HttpClient
 import io.ktor.client.statement.bodyAsText
 import kotlinx.serialization.json.Json
@@ -65,19 +66,19 @@ public class YTMKit {
     }
 
     public suspend fun home(): List<SectionDTO> = try {
-        sectionsFromJson(innerTube.browse(YouTubeClient.WEB_REMIX, "FEmusic_home").bodyAsText())
+        sectionsFromJson(browseWithLocaleFallback("FEmusic_home").bodyAsText())
     } catch (_: Throwable) {
         emptyList()
     }
 
     public suspend fun search(query: String): List<ItemDTO> = try {
-        itemsFromJson(innerTube.search(YouTubeClient.WEB_REMIX, query = query).bodyAsText())
+        itemsFromJson(searchWithLocaleFallback(query).bodyAsText())
     } catch (_: Throwable) {
         emptyList()
     }
 
     public suspend fun playlist(id: String): PlaylistDTO = try {
-        val body = innerTube.browse(YouTubeClient.WEB_REMIX, "VL$id").bodyAsText()
+        val body = browseWithLocaleFallback("VL$id").bodyAsText()
         PlaylistDTO(
             id = id,
             title = firstText(body, "title") ?: id,
@@ -115,6 +116,27 @@ public class YTMKit {
         innerTube.close()
         client.close()
     }
+
+    private suspend fun browseWithLocaleFallback(browseId: String) = try {
+        innerTube.browse(YouTubeClient.WEB_REMIX, browseId = browseId)
+    } catch (error: Throwable) {
+        if (!isHttp400(error) || isUsEnglish()) throw error
+        innerTube.locale = YouTubeLocale(gl = "US", hl = "en")
+        innerTube.browse(YouTubeClient.WEB_REMIX, browseId = browseId)
+    }
+
+    private suspend fun searchWithLocaleFallback(query: String) = try {
+        innerTube.search(YouTubeClient.WEB_REMIX, query = query)
+    } catch (error: Throwable) {
+        if (!isHttp400(error) || isUsEnglish()) throw error
+        innerTube.locale = YouTubeLocale(gl = "US", hl = "en")
+        innerTube.search(YouTubeClient.WEB_REMIX, query = query)
+    }
+
+    private fun isUsEnglish(): Boolean = innerTube.locale.gl == "US" && innerTube.locale.hl == "en"
+
+    private fun isHttp400(error: Throwable): Boolean =
+        error.message?.contains("HTTP 400", ignoreCase = true) == true
 }
 
 private fun safeError(error: Throwable): String =
