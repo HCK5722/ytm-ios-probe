@@ -45,7 +45,15 @@ final class ProbeModel: ObservableObject {
         await readEgress()
         do {
             if items.isEmpty {
-                let playlist = await kit.playlist(id: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62")
+                let playlist: PlaylistDTO
+                do {
+                    playlist = try await kit.playlist(id: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62")
+                } catch {
+                    state = "歌单加载失败"
+                    failureDetail = "YTMKit.playlist bridge: \((error as NSError).localizedDescription)"
+                    verdict = "PROBE_SLICE=FAIL reason=playlist_bridge"
+                    return
+                }
                 if !playlist.error.isEmpty {
                     state = "歌单加载失败"
                     failureDetail = "YTMKit.playlist: \(playlist.error)"
