@@ -9,11 +9,13 @@ private data class Options(
     val potUrl: String,
     val cookie: String?,
     val video: String?,
+    val videos: List<String>,
     val sampleCount: Int,
     val fastPlayback: Boolean,
     val repeat: Int,
     val clientOverride: String?,
     val noPrewarm: Boolean,
+    val directPlayer: Boolean,
 )
 
 public fun main(args: Array<String>) {
@@ -50,13 +52,14 @@ public fun main(args: Array<String>) {
     val result = runBlocking {
         probe.run(
             playlistId = "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
-            videoId = options.video ?: "DcDbKDAb7go",
+            videoId = options.videos.firstOrNull() ?: options.video ?: "DcDbKDAb7go",
             cookie = options.cookie,
             tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
             tokenServiceUrl = options.potUrl,
-            candidateVideoIds = options.video?.let(::listOf) ?: DEFAULT_CANDIDATES,
+            candidateVideoIds = options.videos.ifEmpty { options.video?.let(::listOf) ?: DEFAULT_CANDIDATES },
             sampleCount = options.sampleCount,
             fastPlayback = options.fastPlayback,
+            directPlayerFastPath = options.directPlayer,
             playbackClientOverrideId = options.clientOverride,
         )
     }
@@ -74,6 +77,7 @@ public fun main(args: Array<String>) {
                 candidateVideoIds = listOf(repeatVideo),
                 sampleCount = options.sampleCount,
                 fastPlayback = options.fastPlayback,
+                directPlayerFastPath = options.directPlayer,
                 playbackClientOverrideId = options.clientOverride,
             )
         }
@@ -96,7 +100,11 @@ public fun main(args: Array<String>) {
     result.sampleTrackResults.forEach { println("PROBE_4A2_TRACK ${safe(it)}") }
     result.streamRunSummaries.forEach { println("PROBE_DIAG_RUN ${safe(it)}") }
     result.diagnostic.lineSequence()
-        .filter { it.startsWith("PROBE_TOKEN ") || it.startsWith("PROBE_TOKEN_ATTEMPT ") }
+        .filter {
+            it.startsWith("PROBE_TOKEN ") ||
+                it.startsWith("PROBE_TOKEN_ATTEMPT ") ||
+                it.startsWith("PROBE_TIMING_DIRECT_PLAYER ")
+        }
         .map(::safe)
         .forEach(::println)
     println("PROBE_6_LOGIN=${result.loginState} status=${result.loginStatus} bytes=${result.loginBytes}")
@@ -108,21 +116,25 @@ private fun parseOptions(args: Array<String>): Options {
     var potUrl = "http://127.0.0.1:4416/get_pot"
     var cookie: String? = null
     var video: String? = null
+    var videos = emptyList<String>()
     var sampleCount = 1
     var fastPlayback = false
     var repeat = 1
     var clientOverride: String? = null
     var noPrewarm = false
+    var directPlayer = false
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
             arg.startsWith("--pot-url=") -> potUrl = arg.substringAfter('=')
             arg.startsWith("--video=") -> video = arg.substringAfter('=').takeIf(String::isNotBlank)
+            arg.startsWith("--videos=") -> videos = arg.substringAfter('=').split(',').map(String::trim).filter(String::isNotBlank)
             arg.startsWith("--sample-count=") -> sampleCount = arg.substringAfter('=').toInt()
             arg == "--fast" -> fastPlayback = true
             arg.startsWith("--repeat=") -> repeat = arg.substringAfter('=').toInt()
             arg.startsWith("--client=") -> clientOverride = arg.substringAfter('=').takeIf(String::isNotBlank)
             arg == "--cold" -> noPrewarm = true
+            arg == "--direct-player" -> directPlayer = true
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
@@ -132,7 +144,9 @@ private fun parseOptions(args: Array<String>): Options {
     require(sampleCount in 1..30) { "--sample-count 必须介于 1 和 30" }
     require(repeat in 1..5) { "--repeat 必须介于 1 和 5" }
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
-    return Options(providers, potUrl, cookie, video, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm)
+    require(video == null || videos.isEmpty()) { "--video 与 --videos 不能同时使用" }
+    require(videos.size <= 30) { "--videos 最多支持 30 个 ID" }
+    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")

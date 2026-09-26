@@ -15,9 +15,11 @@ import com.metrolist.innertubex.extraction.TokenProvider
 import com.metrolist.innertubex.extraction.TokenProviderCapabilities
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.YtConfigParser
+import com.metrolist.innertubex.extraction.selectBestAudioFormat
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.YouTubeLocale
+import com.metrolist.innertubex.models.response.PlayerResponse
 import com.metrolist.innertubex.sabr.ExperimentalSabrApi
 import com.metrolist.innertubex.sabr.SabrAudioStream
 import io.ktor.client.HttpClient
@@ -40,6 +42,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
@@ -52,6 +55,8 @@ import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 public class YTMProbe {
@@ -79,6 +84,19 @@ public class YTMProbe {
             bundle.extractor.prewarm()
         }.isSuccess
     }
+
+    /** Builds the shared fast-playback client and primes only anonymous visitor data. */
+    public suspend fun prepareFastPlayback(
+        cookie: String? = null,
+        tokenGroup: String = "baseline",
+        tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
+    ): Boolean = runCatching {
+        val bundle = getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
+        if (bundle.innerTube.visitorData.isNullOrBlank()) {
+            bundle.innerTube.fetchFreshVisitorData(bundle.innerTube.sessionSnapshot())
+        }
+        true
+    }.getOrDefault(false)
 
     /** Resolves one SABR stream, then keeps downloading it into a growing file. */
     @OptIn(ExperimentalSabrApi::class)
@@ -170,6 +188,7 @@ public class YTMProbe {
         collectFullAudio: Boolean = false,
         forceSabr: Boolean = false,
         fastPlayback: Boolean = false,
+        directPlayerFastPath: Boolean = false,
         playbackClientOverrideId: String? = null,
         streamSink: AudioStreamSink? = null,
     ): ProbeResult {
@@ -251,17 +270,34 @@ public class YTMProbe {
                 streamAttempts += 1
                 stage = "stream_extract:$candidate"
                 try {
-                    val candidateStream = extractor.extract(
-                        videoId = candidate,
-                        // Match Metrolist's playback policy: the fast path must
-                        // request a normal Range-capable media URL. SABR is
-                        // reserved for the dedicated streaming fallback.
-                        hints = ContentHints(
-                            wantVideo = false,
-                            playbackClientOverrideId = playbackClientOverrideId,
-                            sabrFirst = forceSabr,
+                    val candidateStream = if (directPlayerFastPath && !forceSabr) {
+                        val directStartedAt = TimeSource.Monotonic.markNow()
+                        val direct = extractDirectPlayerAudio(innerTube, candidate)
+                        logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} ${direct.diagnostic}"
+                        direct.stream ?: extractor.extract(
+                            videoId = candidate,
+                            hints = ContentHints(
+                                wantVideo = false,
+                                playbackClientOverrideId = playbackClientOverrideId,
+                                sabrFirst = forceSabr,
+                            ).withStreamCapabilities(
+                                allowHls = false,
+                                allowSabr = forceSabr,
+                                allowBoundedRange = !fastPlayback,
+                            ),
+                            audioQuality = AudioQuality.MP4,
                         )
-                            .withStreamCapabilities(
+                    } else {
+                        extractor.extract(
+                            videoId = candidate,
+                            // Match Metrolist's playback policy: the fast path must
+                            // request a normal Range-capable media URL. SABR is
+                            // reserved for the dedicated streaming fallback.
+                            hints = ContentHints(
+                                wantVideo = false,
+                                playbackClientOverrideId = playbackClientOverrideId,
+                                sabrFirst = forceSabr,
+                            ).withStreamCapabilities(
                                 allowHls = false,
                                 allowSabr = forceSabr,
                                 // AVPlayer can issue its own Range requests. Requiring
@@ -269,16 +305,15 @@ public class YTMProbe {
                                 // and can discard an otherwise playable direct URL.
                                 allowBoundedRange = !fastPlayback,
                             ),
-                        // AVPlayer on iOS cannot consume the WebM/Opus stream selected by AUTO.
-                        // Prefer the MP4/AAC representation for the playback-chain probe.
-                        audioQuality = AudioQuality.MP4,
-                    )
+                            audioQuality = AudioQuality.MP4,
+                        )
+                    }
                     if (candidateStream == null) {
                         sampleTrackResults += "videoId=$candidate result=FAIL reason=NULL_STREAM"
                     } else {
                         var pulledBytes = 0L
                         var prefixFailure: String? = null
-                        if (streamSink == null && !fastPlayback) {
+                        if (streamSink == null && !fastPlayback && !directPlayerFastPath) {
                             try {
                                 pulledBytes = pullAudioPrefix(client, candidateStream)
                             } catch (error: Throwable) {
@@ -575,6 +610,80 @@ internal expect fun cacheAudioChunks(chunks: List<ByteArray>): String?
 internal expect fun createStreamingAudioFile(): String?
 internal expect fun appendStreamingAudioFile(path: String, chunk: ByteArray): Long
 internal expect fun finishStreamingAudioFile(path: String)
+
+private data class DirectPlayerExtraction(
+    val stream: com.metrolist.innertubex.extraction.ExtractedStream?,
+    val diagnostic: String,
+)
+
+private val DIRECT_PLAYER_JSON = Json { ignoreUnknownKeys = true }
+
+private suspend fun extractDirectPlayerAudio(
+    innerTube: InnerTube,
+    videoId: String,
+): DirectPlayerExtraction {
+    val initialSession = innerTube.sessionSnapshot()
+    val visitorData = initialSession.visitorData ?: innerTube.fetchFreshVisitorData(initialSession)
+    val response = innerTube.player(
+        client = YouTubeClient.VISIONOS_0_1,
+        videoId = videoId,
+        requestVisitorData = visitorData,
+    )
+    if (!response.status.isSuccess()) return DirectPlayerExtraction(null, "http=${response.status.value} result=HTTP_FAILURE")
+    val body = response.bodyAsText()
+    val playerResponse = runCatching {
+        DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(body)
+    }.getOrNull() ?: return DirectPlayerExtraction(null, "http=${response.status.value} decode=FAIL bodyChars=${body.length}")
+    val streamingData = playerResponse.streamingData
+    if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE") || streamingData == null) {
+        val reason = playerResponse.playabilityStatus.reason.orEmpty().replace(Regex("[^A-Za-z0-9 _-]"), "").replace(' ', '_').take(80)
+        return DirectPlayerExtraction(null, "http=${response.status.value} playability=${playerResponse.playabilityStatus.status} reason=${reason.ifBlank { "none" }} visitorPresent=${!visitorData.isNullOrBlank()} streamingData=${streamingData != null}")
+    }
+    val audioFormats = streamingData.adaptiveFormats.filter { it.isAudio }
+    val urlFormats = audioFormats.filter { !it.url.isNullOrBlank() }
+    val unsignedFormats = audioFormats.filter { it.signatureCipher.isNullOrBlank() && it.cipher.isNullOrBlank() }
+    val format = selectBestAudioFormat(
+        formats = audioFormats.filter {
+            it.isAudio && it.signatureCipher.isNullOrBlank() && it.cipher.isNullOrBlank()
+        },
+        audioQuality = AudioQuality.MP4,
+    ) ?: return DirectPlayerExtraction(null, "http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} mp4=${audioFormats.count { it.mimeType.contains("audio/mp4") }} result=NO_DIRECT_FORMAT")
+    val mediaUrl = format.url?.takeIf { isTrustedDirectAudioUrl(it) && !hasNParameter(it) }
+        ?: return DirectPlayerExtraction(null, "http=${response.status.value} playability=PLAYABLE itag=${format.itag} result=URL_REJECTED")
+    val codec = Regex("codecs=\"([^\"]+)\"").find(format.mimeType)?.groupValues?.getOrNull(1)
+    val expiresAt = streamingData.expiresInSeconds?.takeIf { it > 0 }?.let { Clock.System.now() + it.seconds }
+    val stream = com.metrolist.innertubex.extraction.ExtractedStream(
+        videoId = videoId,
+        audioUrl = mediaUrl,
+        headers = emptyMap(),
+        loudnessDb = format.loudnessDb,
+        expiresAt = expiresAt,
+        contentLengthBytes = format.contentLength,
+        itag = format.itag,
+        mimeType = format.mimeType.substringBefore(';').trim(),
+        codecs = codec,
+        bitrate = format.bitrate,
+        sampleRate = format.audioSampleRate,
+        clientName = YouTubeClient.VISIONOS_0_1.clientName,
+        profileId = "VISIONOS_0_1__direct_player",
+        requireBoundedRange = false,
+        rangeChunkSizeBytes = 1_048_576L,
+    )
+    return DirectPlayerExtraction(stream, "http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} itag=${format.itag} result=PASS")
+}
+
+private fun isTrustedDirectAudioUrl(value: String): Boolean =
+    runCatching { io.ktor.http.Url(value) }.getOrNull()?.let { url ->
+        url.protocol == io.ktor.http.URLProtocol.HTTPS &&
+            url.port == 443 &&
+            (url.host == "googlevideo.com" || url.host.endsWith(".googlevideo.com")) &&
+            url.encodedPath == "/videoplayback" &&
+            url.user == null &&
+            url.password == null
+    } == true
+
+private fun hasNParameter(value: String): Boolean =
+    Regex("[?&]n=[^&]+", RegexOption.IGNORE_CASE).containsMatchIn(value)
 
 private fun extractPlaylistVideoIds(body: String): List<String> {
     val ids = linkedSetOf<String>()

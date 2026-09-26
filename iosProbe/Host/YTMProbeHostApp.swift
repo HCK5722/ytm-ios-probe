@@ -88,7 +88,7 @@ final class ProbeModel: ObservableObject {
         Task { await readEgress() }
         playbackPrewarmTask = Task {
             do {
-                _ = try await playbackProbe.prewarmPlayback(
+                _ = try await playbackProbe.prepareFastPlayback(
                     cookie: nil,
                     tokenGroup: "baseline",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
@@ -322,6 +322,7 @@ final class ProbeModel: ObservableObject {
                 collectFullAudio: false,
                 forceSabr: false,
                 fastPlayback: true,
+                directPlayerFastPath: true,
                 playbackClientOverrideId: "VISIONOS_0_1",
                 streamSink: nil,
             )
