@@ -471,6 +471,7 @@ final class ProbeModel: ObservableObject {
                 collectFullAudio: true,
                 forceSabr: true,
                 fastPlayback: false,
+                directPlayerFastPath: false,
                 playbackClientOverrideId: nil,
                 streamSink: nil,
             )
@@ -571,6 +572,7 @@ final class ProbeModel: ObservableObject {
                         collectFullAudio: false,
                         forceSabr: true,
                         fastPlayback: false,
+                        directPlayerFastPath: false,
                         playbackClientOverrideId: nil,
                         streamSink: nil,
                     )
