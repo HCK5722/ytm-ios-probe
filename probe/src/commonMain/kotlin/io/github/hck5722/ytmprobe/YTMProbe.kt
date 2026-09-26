@@ -58,6 +58,7 @@ public class YTMProbe {
         sampleCount: Int = 1,
         collectFullAudio: Boolean = false,
         forceSabr: Boolean = false,
+        fastPlayback: Boolean = false,
     ): ProbeResult {
         val logLines = mutableListOf<String>()
         var stage = "init"
@@ -82,28 +83,32 @@ public class YTMProbe {
                 innerTube.useLoginForBrowse = true
             }
             stage = "darwin_http"
-            val darwinResponse = client.get("https://music.youtube.com/")
-            val darwinBody = darwinResponse.bodyAsText()
+            val darwinResponse = if (!fastPlayback) client.get("https://music.youtube.com/") else null
+            val darwinBody = darwinResponse?.bodyAsText().orEmpty()
 
             stage = "browse"
             val detectedLocale = innerTube.locale
             logLines += "PROBE_LOCALE gl=${detectedLocale.gl.ifBlank { "none" }} hl=${detectedLocale.hl.ifBlank { "none" }}"
-            val browseResponse = try {
-                innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
-            } catch (error: Throwable) {
-                val isHttp400 = error.message?.contains("browse failed with HTTP 400") == true
-                if (!isHttp400 || detectedLocale.gl == "US" && detectedLocale.hl == "en") throw error
-                val fallbackLocale = YouTubeLocale(gl = "US", hl = "en")
-                logLines += "PROBE_BROWSE_RETRY reason=http_400 locale=${fallbackLocale.gl}/${fallbackLocale.hl}"
-                innerTube.locale = fallbackLocale
-                logLines += "PROBE_LOCALE_ACTIVE gl=${fallbackLocale.gl} hl=${fallbackLocale.hl}"
-                innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
-            }
-            val browseBody = browseResponse.bodyAsTextLimited(MAX_RESPONSE_BYTES)
+            val browseResponse = if (!fastPlayback) {
+                try {
+                    innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
+                } catch (error: Throwable) {
+                    val isHttp400 = error.message?.contains("browse failed with HTTP 400") == true
+                    if (!isHttp400 || detectedLocale.gl == "US" && detectedLocale.hl == "en") throw error
+                    val fallbackLocale = YouTubeLocale(gl = "US", hl = "en")
+                    logLines += "PROBE_BROWSE_RETRY reason=http_400 locale=${fallbackLocale.gl}/${fallbackLocale.hl}"
+                    innerTube.locale = fallbackLocale
+                    logLines += "PROBE_LOCALE_ACTIVE gl=${fallbackLocale.gl} hl=${fallbackLocale.hl}"
+                    innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "VL$playlistId")
+                }
+            } else null
+            val browseBody = browseResponse?.bodyAsTextLimited(MAX_RESPONSE_BYTES).orEmpty()
 
             stage = "search"
-            val searchResponse = innerTube.search(YouTubeClient.WEB_REMIX, query = "YouTube Music", setLogin = false)
-            val searchBody = searchResponse.bodyAsTextLimited(MAX_RESPONSE_BYTES)
+            val searchResponse = if (!fastPlayback) {
+                innerTube.search(YouTubeClient.WEB_REMIX, query = "YouTube Music", setLogin = false)
+            } else null
+            val searchBody = searchResponse?.bodyAsTextLimited(MAX_RESPONSE_BYTES).orEmpty()
 
             val cipher = YouTubeCipherService(client, logger = logger)
             val externalTokenProvider = if (tokenGroup == "2a") {
@@ -120,7 +125,7 @@ public class YTMProbe {
                 logger = logger,
             )
             stage = "extractor_prewarm"
-            extractor.prewarm()
+            if (!fastPlayback) extractor.prewarm()
             val streamCandidates =
                 (candidateVideoIds + extractPlaylistVideoIds(browseBody))
                     .distinct()
@@ -220,13 +225,13 @@ public class YTMProbe {
             }
 
             return ProbeResult(
-                darwinHttpOk = darwinResponse.status.isSuccess() && darwinBody.isNotBlank(),
-                darwinStatus = darwinResponse.status.value,
-                browseOk = browseResponse.status.isSuccess() && browseBody.contains(playlistId),
-                browseStatus = browseResponse.status.value,
+                darwinHttpOk = darwinResponse?.status?.isSuccess() == true && darwinBody.isNotBlank(),
+                darwinStatus = darwinResponse?.status?.value ?: 0,
+                browseOk = browseResponse?.status?.isSuccess() == true && browseBody.contains(playlistId),
+                browseStatus = browseResponse?.status?.value ?: 0,
                 browseBytes = browseBody.encodeToByteArray().size,
-                searchOk = searchResponse.status.isSuccess() && searchBody.length > 1_000,
-                searchStatus = searchResponse.status.value,
+                searchOk = searchResponse?.status?.isSuccess() == true && searchBody.length > 1_000,
+                searchStatus = searchResponse?.status?.value ?: 0,
                 searchBytes = searchBody.encodeToByteArray().size,
                 streamOk = stream != null,
                 streamAttempts = streamAttempts,

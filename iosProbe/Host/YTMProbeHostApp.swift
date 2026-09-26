@@ -35,7 +35,8 @@ final class ProbeModel: ObservableObject {
     @Published var preparing = false
 
     private struct PreparedAudio {
-        let data: Data
+        let data: Data?
+        let directURL: URL?
         let mimeType: String
         let client: String
         let profile: String
@@ -166,18 +167,31 @@ final class ProbeModel: ObservableObject {
                 return
             }
             guard generation == playbackGeneration, !Task.isCancelled else { return }
-            let server = LoopbackRangeServer(data: prepared.data, mimeType: prepared.mimeType)
-            rangeServer = server
-            do {
-                try server.start()
-            } catch {
-                state = "本地音频服务启动失败"
-                failureDetail = "stage=loopback\n\((error as NSError).localizedDescription)"
-                verdict = "PROBE_PLAY=FAIL reason=loopback"
+            let item: AVPlayerItem
+            if let directURL = prepared.directURL {
+                item = AVPlayerItem(url: directURL)
+                transport = "DIRECT / \(prepared.mimeType)"
+            } else if let data = prepared.data {
+                let server = LoopbackRangeServer(data: data, mimeType: prepared.mimeType)
+                rangeServer = server
+                do {
+                    try server.start()
+                } catch {
+                    state = "本地音频服务启动失败"
+                    failureDetail = "stage=loopback\n\((error as NSError).localizedDescription)"
+                    verdict = "PROBE_PLAY=FAIL reason=loopback"
+                    stopAfterFailure(index: index)
+                    return
+                }
+                item = AVPlayerItem(url: server.url)
+                transport = "SABR / \(prepared.mimeType)"
+            } else {
+                state = "播放数据为空"
+                failureDetail = "stage=media_source"
+                verdict = "PROBE_PLAY=FAIL reason=media_source"
                 stopAfterFailure(index: index)
                 return
             }
-            let item = AVPlayerItem(url: server.url)
             let newPlayer = AVPlayer(playerItem: item)
             player = newPlayer
             installPlayerObservers(item: item, track: self.items[index])
@@ -199,7 +213,6 @@ final class ProbeModel: ObservableObject {
             state = "播放中：\(self.items[index].title)"
             client = prepared.client
             profile = prepared.profile
-            transport = "SABR / \(prepared.mimeType)"
             bytes = "\(prepared.bytes)"
             verdict = "PROBE_PLAY=PASS"
         } catch is CancellationError {
@@ -225,8 +238,9 @@ final class ProbeModel: ObservableObject {
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
                 candidateVideoIds: [item.id],
                 sampleCount: 1,
-                collectFullAudio: true,
-                forceSabr: true,
+                collectFullAudio: false,
+                forceSabr: false,
+                fastPlayback: true,
             )
             if let failureStage = result.failureStage {
                 if updateUI {
@@ -236,22 +250,51 @@ final class ProbeModel: ObservableObject {
                 }
                 return nil
             }
-            guard result.streamOk, result.isSabr, result.audioComplete,
-                  let path = result.audioCachePath,
+            if result.streamOk, !result.isSabr,
+               let urlString = result.audioUrl,
+               let directURL = URL(string: urlString),
+               directURL.scheme == "https" {
+                return PreparedAudio(
+                    data: nil,
+                    directURL: directURL,
+                    mimeType: result.audioMimeType ?? "audio/mp4",
+                    client: result.audioClient ?? "unknown",
+                    profile: result.audioProfile ?? "unknown",
+                    bytes: result.audioExpectedBytes ?? 0,
+                )
+            }
+
+            // Some iOS profiles expose only SABR. Keep the proven fallback,
+            // but use it only when a direct MP4 URL was not available.
+            let fallback = try await YTMProbe().run(
+                playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+                videoId: item.id,
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                candidateVideoIds: [item.id],
+                sampleCount: 1,
+                collectFullAudio: true,
+                forceSabr: true,
+                fastPlayback: false,
+            )
+            guard fallback.streamOk, fallback.isSabr, fallback.audioComplete,
+                  let path = fallback.audioCachePath,
                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
                 if updateUI {
                     state = "取流失败：\(item.title)"
-                    failureDetail = "\(result.streamFailure ?? "NO_PLAYABLE_STREAM")\n\(result.streamDiagnostics)"
+                    failureDetail = "\(fallback.streamFailure ?? result.streamFailure ?? "NO_PLAYABLE_STREAM")\n\(fallback.streamDiagnostics)"
                     verdict = "PROBE_PLAY=FAIL reason=stream"
                 }
                 return nil
             }
-            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: fallback.audioCachePath ?? "")
             return PreparedAudio(
                 data: data,
-                mimeType: result.audioMimeType ?? "audio/mp4",
-                client: result.audioClient ?? "unknown",
-                profile: result.audioProfile ?? "unknown",
+                directURL: nil,
+                mimeType: fallback.audioMimeType ?? "audio/mp4",
+                client: fallback.audioClient ?? "unknown",
+                profile: fallback.audioProfile ?? "unknown",
                 bytes: Int64(data.count),
             )
         } catch {
@@ -312,18 +355,25 @@ final class ProbeModel: ObservableObject {
             var passed = 0
             var profiles: [String: Int] = [:]
             var failures: [String: Int] = [:]
+            var failureTracks: [String] = []
             for (offset, item) in sample.enumerated() {
-                let result = try? await YTMProbe().run(
-                    playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
-                    videoId: item.id,
-                    cookie: nil,
-                    tokenGroup: "baseline",
-                    tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                    candidateVideoIds: [item.id],
-                    sampleCount: 1,
-                    collectFullAudio: false,
-                    forceSabr: true,
-                )
+                var result: ProbeResult?
+                for attempt in 1...3 {
+                    if Task.isCancelled { break }
+                    result = try? await YTMProbe().run(
+                        playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+                        videoId: item.id,
+                        cookie: nil,
+                        tokenGroup: "baseline",
+                        tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                        candidateVideoIds: [item.id],
+                        sampleCount: 1,
+                        collectFullAudio: false,
+                        forceSabr: true,
+                    )
+                    if result?.streamOk == true { break }
+                    if attempt < 3 { try? await Task.sleep(for: .milliseconds(350)) }
+                }
                 if let result, result.streamOk {
                     passed += 1
                     let profile = result.audioProfile ?? "unknown"
@@ -331,12 +381,15 @@ final class ProbeModel: ObservableObject {
                 } else {
                     let reason = result?.streamFailure ?? "request_or_exception"
                     failures[reason, default: 0] += 1
+                    let detail = result?.failureMessage ?? result?.streamDiagnostics ?? "no_diagnostics"
+                    failureTracks.append("\(offset + 1):\(item.title) [\(item.id)] \(reason) \(detail)")
                 }
                 self.coverageText = "覆盖率自检：\(offset + 1)/\(sample.count)"
             }
             let profileText = profiles.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
             let failureText = failures.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-            self.coverageText = "覆盖率：\(passed)/\(sample.count)\nprofile：\(profileText.isEmpty ? "无" : profileText)\n失败：\(failureText.isEmpty ? "无" : failureText)"
+            let trackText = failureTracks.isEmpty ? "无" : failureTracks.joined(separator: "\n")
+            self.coverageText = "覆盖率：\(passed)/\(sample.count)\nprofile：\(profileText.isEmpty ? "无" : profileText)\n失败：\(failureText.isEmpty ? "无" : failureText)\n失败曲目：\n\(trackText)"
         }
     }
 
