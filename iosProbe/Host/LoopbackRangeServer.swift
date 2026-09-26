@@ -151,7 +151,7 @@ final class LoopbackRangeServer: @unchecked Sendable {
             if requested.0 < snapshot.available {
                 let requestedEnd = requested.1.map(Int64.init)
                 let end = min(requestedEnd ?? (snapshot.completed ? total - 1 : snapshot.available - 1), snapshot.available - 1)
-                if end >= requested.0, let bytes = readFile(snapshot.path, range: requested.0..<(end + 1)) {
+                if end >= Int64(requested.0), let bytes = readFile(snapshot.path, range: requested.0..<Int(end + 1)) {
                     sendData(client, data: bytes, range: 0..<bytes.count, total: Int(total), partial: true, contentRange: "bytes \(requested.0)-\(end)/\(total > 0 ? String(total) : "*")")
                     return
                 }
