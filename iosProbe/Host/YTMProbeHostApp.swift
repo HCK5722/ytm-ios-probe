@@ -174,7 +174,7 @@ final class ProbeModel: ObservableObject {
             if let directURL = prepared.directURL {
                 let assetOptions: [String: Any]? = prepared.headers.isEmpty
                     ? nil
-                    : [AVURLAssetHTTPHeaderFieldsKey: prepared.headers]
+                    : ["AVURLAssetHTTPHeaderFieldsKey": prepared.headers]
                 let asset = AVURLAsset(url: directURL, options: assetOptions)
                 item = AVPlayerItem(asset: asset)
                 transport = "DIRECT / \(prepared.mimeType)"
