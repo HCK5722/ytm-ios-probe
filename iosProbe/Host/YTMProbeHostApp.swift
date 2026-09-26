@@ -257,6 +257,7 @@ final class ProbeModel: ObservableObject {
                 collectFullAudio: false,
                 forceSabr: false,
                 fastPlayback: true,
+                streamSink: nil,
             )
             if let failureStage = result.failureStage {
                 if updateUI {
@@ -398,6 +399,7 @@ final class ProbeModel: ObservableObject {
                         collectFullAudio: false,
                         forceSabr: true,
                         fastPlayback: false,
+                        streamSink: nil,
                     )
                     if result?.streamOk == true { break }
                     if attempt < 3 { try? await Task.sleep(for: .milliseconds(350)) }

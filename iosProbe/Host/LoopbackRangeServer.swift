@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import YTMProbe
 
 final class StreamingAudioState: @unchecked Sendable {
     private let lock = NSLock()
@@ -148,9 +149,10 @@ final class LoopbackRangeServer: @unchecked Sendable {
             }
             let total = snapshot.expected > 0 ? snapshot.expected : snapshot.available
             if requested.0 < snapshot.available {
-                let end = min(requested.1 ?? (snapshot.completed ? total - 1 : snapshot.available - 1), snapshot.available - 1)
+                let requestedEnd = requested.1.map(Int64.init)
+                let end = min(requestedEnd ?? (snapshot.completed ? total - 1 : snapshot.available - 1), snapshot.available - 1)
                 if end >= requested.0, let bytes = readFile(snapshot.path, range: requested.0..<(end + 1)) {
-                    sendData(client, data: bytes, range: 0..<bytes.count, total: total, partial: true, contentRange: "bytes \(requested.0)-\(end)/\(total > 0 ? String(total) : "*")")
+                    sendData(client, data: bytes, range: 0..<bytes.count, total: Int(total), partial: true, contentRange: "bytes \(requested.0)-\(end)/\(total > 0 ? String(total) : "*")")
                     return
                 }
             }
