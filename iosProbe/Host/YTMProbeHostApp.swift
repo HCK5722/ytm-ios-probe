@@ -34,6 +34,8 @@ final class ProbeModel: ObservableObject {
     @Published var coverageText = ""
     @Published var preparing = false
     @Published var lastResolveMs = "-"
+    @Published var tapToReadyMs = "-"
+    @Published var tapToAudioMs = "-"
 
     private struct PreparedAudio {
         let data: Data?
@@ -65,6 +67,8 @@ final class ProbeModel: ObservableObject {
     private var prefetchTask: Task<Void, Never>?
     private var prefetchingTrackId: String?
     private var backgroundPrefetchTask: Task<Void, Never>?
+    private var playbackTapStartedAt: Date?
+    private var didRecordAudioStart = false
 
     init() {
         configureRemoteCommands()
@@ -86,6 +90,9 @@ final class ProbeModel: ObservableObject {
             Task { @MainActor in self?.handleRouteChange(reasonRaw: reasonRaw) }
         }
         Task { await readEgress() }
+        // Configure the session while the app is idle so the first tap does
+        // not pay the audio-route setup cost.
+        try? configureAudioSession()
         playbackPrewarmTask = Task {
             do {
                 _ = try await playbackProbe.prepareFastPlayback(
@@ -135,6 +142,7 @@ final class ProbeModel: ObservableObject {
             playlistTitle = playlist.title
             items = Array(playlist.items.prefix(100))
             currentIndex = -1
+            _ = await playbackPrewarmTask?.value
             scheduleBackgroundPrefetch()
             state = "歌单已加载：\(items.count) 首"
             verdict = "PROBE_QUEUE=PASS items=\(items.count)"
@@ -163,6 +171,10 @@ final class ProbeModel: ObservableObject {
         playbackGeneration &+= 1
         let generation = playbackGeneration
         currentIndex = index
+        playbackTapStartedAt = Date()
+        didRecordAudioStart = false
+        tapToReadyMs = "-"
+        tapToAudioMs = "-"
         failureDetail = ""
         state = "准备：\(items[index].title)"
         verdict = "PROBE_PLAY=RUNNING"
@@ -630,8 +642,10 @@ final class ProbeModel: ObservableObject {
                 guard let self else { return }
                 self.playerStatus = "\(status.rawValue)"
                 if status == .readyToPlay {
+                    if let startedAt = self.playbackTapStartedAt {
+                        self.tapToReadyMs = "\(Int(Date().timeIntervalSince(startedAt) * 1000)) ms"
+                    }
                     self.state = "播放中：\(trackTitle)"
-                    self.verdict = "PROBE_PLAY=PASS resolveMs=\(self.lastResolveMs)"
                 } else if status == .failed {
                     self.state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 播放失败"
                     self.verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
@@ -645,6 +659,13 @@ final class ProbeModel: ObservableObject {
             let seconds = time.seconds
             Task { @MainActor in
                 self?.currentTime = String(format: "%.1f s", seconds)
+                if let self, seconds > 0.05, !self.didRecordAudioStart {
+                    self.didRecordAudioStart = true
+                    if let startedAt = self.playbackTapStartedAt {
+                        self.tapToAudioMs = "\(Int(Date().timeIntervalSince(startedAt) * 1000)) ms"
+                    }
+                    self.verdict = "PROBE_PLAY=PASS resolveMs=\(self.lastResolveMs) tapToAudioMs=\(self.tapToAudioMs)"
+                }
                 self?.refreshNowPlaying()
             }
         }
@@ -790,6 +811,8 @@ struct ProbeScreen: View {
                 row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
                 row("AVPlayer status", model.playerStatus)
                 row("解析耗时", model.lastResolveMs)
+                row("点击到 ready", model.tapToReadyMs)
+                row("点击到出声", model.tapToAudioMs)
                 row("currentTime", model.currentTime)
                 row("状态", model.state)
                 if !model.failureDetail.isEmpty { Text(model.failureDetail).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
