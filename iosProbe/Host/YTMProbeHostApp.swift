@@ -336,7 +336,10 @@ final class ProbeModel: ObservableObject {
                 fastPlayback: true,
                 directPlayerFastPath: true,
                 verifyAudioPrefix: false,
-                playbackClientOverrideId: "VISIONOS_0_1",
+                // Let the formal extractor choose the direct-capable client
+                // for this device/network; forcing VISIONOS can return an
+                // empty result on iOS even when automatic selection works.
+                playbackClientOverrideId: nil,
                 streamSink: nil,
             )
             if let failureStage = result.failureStage {
