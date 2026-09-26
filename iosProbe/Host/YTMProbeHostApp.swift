@@ -33,6 +33,7 @@ final class ProbeModel: ObservableObject {
     @Published var coverageRunning = false
     @Published var coverageText = ""
     @Published var preparing = false
+    @Published var lastResolveMs = "-"
 
     private struct PreparedAudio {
         let data: Data?
@@ -48,6 +49,7 @@ final class ProbeModel: ObservableObject {
     private var player: AVPlayer?
     private var rangeServer: LoopbackRangeServer?
     private var timeObserver: Any?
+    private var statusObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeObserver: NSObjectProtocol?
@@ -57,6 +59,8 @@ final class ProbeModel: ObservableObject {
     private let kit = YTMKit()
     private let playbackProbe = YTMProbe()
     private var configuredAudio = false
+    private var preparedDirectCache: [String: PreparedAudio] = [:]
+    private var prefetchTask: Task<Void, Never>?
 
     init() {
         configureRemoteCommands()
@@ -145,6 +149,7 @@ final class ProbeModel: ObservableObject {
             return
         }
         currentTask?.cancel()
+        prefetchTask?.cancel()
         stopCurrentPlayer()
         playbackGeneration &+= 1
         let generation = playbackGeneration
@@ -162,7 +167,9 @@ final class ProbeModel: ObservableObject {
         defer { preparing = false }
         guard items.indices.contains(index) else { return }
         let item = items[index]
+        let resolveStartedAt = Date()
         let prepared = await fetchAudio(for: item, updateUI: true)
+        lastResolveMs = "\(Int(Date().timeIntervalSince(resolveStartedAt) * 1000)) ms"
         guard generation == playbackGeneration, !Task.isCancelled else { return }
         guard let prepared else {
             // Do not hide the first real failure by cascading through the
@@ -230,26 +237,15 @@ final class ProbeModel: ObservableObject {
             item.preferredForwardBufferDuration = 0
             player = newPlayer
             installPlayerObservers(item: item, track: self.items[index])
-            let deadline = Date().addingTimeInterval(45)
-            while item.status == .unknown && Date() < deadline {
-                try await Task.sleep(for: .milliseconds(200))
-                guard generation == playbackGeneration, !Task.isCancelled else { return }
-            }
-            guard generation == playbackGeneration, !Task.isCancelled else { return }
-            playerStatus = "\(item.status.rawValue)"
-            guard item.status == .readyToPlay else {
-                state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 未 readyToPlay"
-                verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
-                stopAfterFailure(index: index)
-                return
-            }
             newPlayer.play()
             isPlaying = true
-            state = "播放中：\(self.items[index].title)"
+            playerStatus = "\(item.status.rawValue)"
+            state = "已发起播放：\(self.items[index].title)（等待音频缓冲）"
             client = prepared.client
             profile = prepared.profile
             bytes = "\(prepared.bytes)"
-            verdict = "PROBE_PLAY=PASS"
+            verdict = "PROBE_PLAY=RUNNING resolveMs=\(lastResolveMs)"
+            schedulePrefetch(after: index, generation: generation)
         } catch is CancellationError {
             // Cancelling the previous track during a deliberate track change
             // is normal and must never be shown as a playback failure.
@@ -264,6 +260,13 @@ final class ProbeModel: ObservableObject {
     }
 
     private func fetchAudio(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
+        if let cached = preparedDirectCache.removeValue(forKey: item.id) {
+            return cached
+        }
+        return await fetchAudio(for: item, updateUI: updateUI, allowFallback: true)
+    }
+
+    private func fetchAudio(for item: ItemDTO, updateUI: Bool, allowFallback: Bool) async -> PreparedAudio? {
         do {
             let result = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
@@ -301,6 +304,8 @@ final class ProbeModel: ObservableObject {
                     bytes: result.audioExpectedBytes?.int64Value ?? 0,
                 )
             }
+
+            if !allowFallback { return nil }
 
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
@@ -354,6 +359,20 @@ final class ProbeModel: ObservableObject {
                 verdict = "PROBE_PLAY=FAIL reason=stream_exception"
             }
             return nil
+        }
+    }
+
+    private func schedulePrefetch(after index: Int, generation: Int) {
+        guard let next = nextIndex(after: index), items.indices.contains(next) else { return }
+        let nextItem = items[next]
+        guard preparedDirectCache[nextItem.id] == nil else { return }
+        prefetchTask?.cancel()
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            let prepared = await self.fetchAudio(for: nextItem, updateUI: false, allowFallback: false)
+            guard !Task.isCancelled, generation == self.playbackGeneration,
+                  let prepared, prepared.directURL != nil else { return }
+            self.preparedDirectCache[nextItem.id] = prepared
         }
     }
 
@@ -513,6 +532,21 @@ final class ProbeModel: ObservableObject {
 
     private func installPlayerObservers(item: AVPlayerItem, track: ItemDTO) {
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
+        statusObserver?.invalidate()
+        statusObserver = item.observe(\AVPlayerItem.status, options: [.initial, .new]) { [weak self] item, _ in
+            let status = item.status
+            Task { @MainActor in
+                guard let self else { return }
+                self.playerStatus = "\(status.rawValue)"
+                if status == .readyToPlay {
+                    self.state = "播放中：\(track.title)"
+                    self.verdict = "PROBE_PLAY=PASS resolveMs=\(self.lastResolveMs)"
+                } else if status == .failed {
+                    self.state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 播放失败"
+                    self.verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
+                }
+            }
+        }
         timeObserver = player?.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 1, preferredTimescale: 600),
             queue: .main,
@@ -541,6 +575,8 @@ final class ProbeModel: ObservableObject {
     }
 
     private func stopCurrentPlayer() {
+        statusObserver?.invalidate()
+        statusObserver = nil
         if let timeObserver, let player {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
@@ -662,6 +698,7 @@ struct ProbeScreen: View {
                 row("client / profile", "\(model.client) / \(model.profile)")
                 row("传输 / 实收字节", "\(model.transport) / \(model.bytes)")
                 row("AVPlayer status", model.playerStatus)
+                row("解析耗时", model.lastResolveMs)
                 row("currentTime", model.currentTime)
                 row("状态", model.state)
                 if !model.failureDetail.isEmpty { Text(model.failureDetail).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }

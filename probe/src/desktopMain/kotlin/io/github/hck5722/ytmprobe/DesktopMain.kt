@@ -10,6 +10,8 @@ private data class Options(
     val cookie: String?,
     val video: String?,
     val sampleCount: Int,
+    val fastPlayback: Boolean,
+    val repeat: Int,
 )
 
 public fun main(args: Array<String>) {
@@ -28,8 +30,10 @@ public fun main(args: Array<String>) {
         println("PROBE_COOKIE=SKIP_NO_CREDENTIAL")
     }
 
+    val probe = YTMProbe()
+    val startedAt = System.nanoTime()
     val result = runBlocking {
-        YTMProbe().run(
+        probe.run(
             playlistId = "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
             videoId = options.video ?: "DcDbKDAb7go",
             cookie = options.cookie,
@@ -37,7 +41,26 @@ public fun main(args: Array<String>) {
             tokenServiceUrl = options.potUrl,
             candidateVideoIds = options.video?.let(::listOf) ?: DEFAULT_CANDIDATES,
             sampleCount = options.sampleCount,
+            fastPlayback = options.fastPlayback,
         )
+    }
+    println("PROBE_TIMING resolveMs=${(System.nanoTime() - startedAt) / 1_000_000} fastPlayback=${options.fastPlayback}")
+    repeat(options.repeat - 1) { repeatIndex ->
+        val repeatStartedAt = System.nanoTime()
+        val repeatVideo = options.video ?: DEFAULT_CANDIDATES[(repeatIndex + 1) % DEFAULT_CANDIDATES.size]
+        runBlocking {
+            probe.run(
+                playlistId = "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+                videoId = repeatVideo,
+                cookie = options.cookie,
+                tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
+                tokenServiceUrl = options.potUrl,
+                candidateVideoIds = listOf(repeatVideo),
+                sampleCount = options.sampleCount,
+                fastPlayback = options.fastPlayback,
+            )
+        }
+        println("PROBE_TIMING repeat=${repeatIndex + 2} video=$repeatVideo resolveMs=${(System.nanoTime() - repeatStartedAt) / 1_000_000} fastPlayback=${options.fastPlayback}")
     }
 
     println("PROBE_1_LINK=PASS framework=YTMProbe target=desktop")
@@ -69,12 +92,16 @@ private fun parseOptions(args: Array<String>): Options {
     var cookie: String? = null
     var video: String? = null
     var sampleCount = 1
+    var fastPlayback = false
+    var repeat = 1
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
             arg.startsWith("--pot-url=") -> potUrl = arg.substringAfter('=')
             arg.startsWith("--video=") -> video = arg.substringAfter('=').takeIf(String::isNotBlank)
             arg.startsWith("--sample-count=") -> sampleCount = arg.substringAfter('=').toInt()
+            arg == "--fast" -> fastPlayback = true
+            arg.startsWith("--repeat=") -> repeat = arg.substringAfter('=').toInt()
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
@@ -82,8 +109,9 @@ private fun parseOptions(args: Array<String>): Options {
     }
     require(providers == "NONE" || providers == "EXTERNAL") { "--providers 只能是 NONE 或 EXTERNAL" }
     require(sampleCount in 1..30) { "--sample-count 必须介于 1 和 30" }
+    require(repeat in 1..5) { "--repeat 必须介于 1 和 5" }
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
-    return Options(providers, potUrl, cookie, video, sampleCount)
+    return Options(providers, potUrl, cookie, video, sampleCount, fastPlayback, repeat)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")
