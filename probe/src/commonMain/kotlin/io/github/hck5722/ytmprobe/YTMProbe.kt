@@ -50,6 +50,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
@@ -276,19 +279,11 @@ public class YTMProbe {
                         val directStartedAt = TimeSource.Monotonic.markNow()
                         val direct = extractDirectPlayerAudio(innerTube, candidate)
                         logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} ${direct.diagnostic}"
-                        direct.stream ?: extractor.extract(
-                            videoId = candidate,
-                            hints = ContentHints(
-                                wantVideo = false,
-                                playbackClientOverrideId = playbackClientOverrideId,
-                                sabrFirst = forceSabr,
-                            ).withStreamCapabilities(
-                                allowHls = false,
-                                allowSabr = forceSabr,
-                                allowBoundedRange = !fastPlayback,
-                            ),
-                            audioQuality = AudioQuality.MP4,
-                        )
+                        // Fast playback is a direct-media contract. Do not
+                        // silently turn a failed direct request into a 9-10s
+                        // SABR resolution; the caller can show the actual
+                        // direct-client failure and retry another client.
+                        direct.stream
                     } else {
                         extractor.extract(
                             videoId = candidate,
@@ -395,6 +390,12 @@ public class YTMProbe {
             }
             if (streamingPath != null) streamSink?.onStreamCompleted()
 
+            val directFailure = if (directPlayerFastPath && stream == null) {
+                logLines.filter { it.startsWith("PROBE_TIMING_DIRECT_PLAYER ") }
+                    .joinToString(" | ")
+                    .ifBlank { "no_direct_client_result" }
+            } else null
+
             val loginStatus: Int
             val loginBytes: Int
             val loginState: String
@@ -426,7 +427,7 @@ public class YTMProbe {
                 searchBytes = searchBody.encodeToByteArray().size,
                 streamOk = stream != null,
                 streamAttempts = streamAttempts,
-                streamFailure = streamFailure,
+                streamFailure = streamFailure ?: directFailure,
                 audioUrl = stream?.audioUrl,
                 audioHeaders = stream?.headers.orEmpty(),
                 audioMimeType = stream?.mimeType,
@@ -451,6 +452,9 @@ public class YTMProbe {
                 loginState = loginState,
                 loginStatus = loginStatus,
                 loginBytes = loginBytes,
+                failureStage = if (directFailure != null) "direct_no_url" else null,
+                failureType = if (directFailure != null) "DirectAudioUnavailable" else null,
+                failureMessage = directFailure,
                 diagnostic = logLines.takeLast(120).joinToString("\n"),
             )
         } catch (error: CancellationException) {
@@ -627,8 +631,34 @@ private suspend fun extractDirectPlayerAudio(
 ): DirectPlayerExtraction {
     val initialSession = innerTube.sessionSnapshot()
     val visitorData = initialSession.visitorData ?: innerTube.fetchFreshVisitorData(initialSession)
+    val candidates = listOf(
+        YouTubeClient.VISIONOS_0_1,
+        YouTubeClient.VISIONOS,
+        YouTubeClient.IOS_MUSIC,
+    )
+    // A device network can receive different format sets for these closely
+    // related clients. Ask them concurrently so a SABR-only response from one
+    // client does not add another serial multi-second round trip.
+    val results = coroutineScope {
+        candidates.map { client ->
+            async(Dispatchers.Default) {
+                extractDirectPlayerAudioForClient(innerTube, videoId, visitorData, client)
+            }
+        }.awaitAll()
+    }
+    return results.firstOrNull { it.stream != null }
+        ?: results.firstOrNull()
+        ?: DirectPlayerExtraction(null, "clients=none result=NO_DIRECT_FORMAT")
+}
+
+private suspend fun extractDirectPlayerAudioForClient(
+    innerTube: InnerTube,
+    videoId: String,
+    visitorData: String?,
+    client: YouTubeClient,
+): DirectPlayerExtraction {
     val response = innerTube.player(
-        client = YouTubeClient.VISIONOS_0_1,
+        client = client,
         videoId = videoId,
         requestVisitorData = visitorData,
     )
@@ -667,12 +697,12 @@ private suspend fun extractDirectPlayerAudio(
         codecs = codec,
         bitrate = format.bitrate,
         sampleRate = format.audioSampleRate,
-        clientName = YouTubeClient.VISIONOS_0_1.clientName,
-        profileId = "VISIONOS_0_1__direct_player",
+        clientName = client.clientName,
+        profileId = "${client.clientName}_${client.clientVersion}__direct_player",
         requireBoundedRange = false,
         rangeChunkSizeBytes = 1_048_576L,
     )
-    return DirectPlayerExtraction(stream, "http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} itag=${format.itag} result=PASS")
+    return DirectPlayerExtraction(stream, "client=${client.clientName} http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} itag=${format.itag} result=PASS")
 }
 
 private fun isTrustedDirectAudioUrl(value: String): Boolean =
