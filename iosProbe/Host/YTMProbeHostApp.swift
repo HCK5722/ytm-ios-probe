@@ -64,6 +64,7 @@ final class ProbeModel: ObservableObject {
     private var preparedDirectCache: [String: PreparedAudio] = [:]
     private var prefetchTask: Task<Void, Never>?
     private var prefetchingTrackId: String?
+    private var backgroundPrefetchTask: Task<Void, Never>?
 
     init() {
         configureRemoteCommands()
@@ -134,6 +135,7 @@ final class ProbeModel: ObservableObject {
             playlistTitle = playlist.title
             items = Array(playlist.items.prefix(100))
             currentIndex = -1
+            scheduleBackgroundPrefetch()
             state = "歌单已加载：\(items.count) 首"
             verdict = "PROBE_QUEUE=PASS items=\(items.count)"
             return true
@@ -152,6 +154,8 @@ final class ProbeModel: ObservableObject {
             return
         }
         currentTask?.cancel()
+        backgroundPrefetchTask?.cancel()
+        backgroundPrefetchTask = nil
         if prefetchingTrackId != items[index].id {
             prefetchTask?.cancel()
         }
@@ -420,6 +424,36 @@ final class ProbeModel: ObservableObject {
             guard !Task.isCancelled, generation == self.playbackGeneration,
                   let prepared, prepared.directURL != nil else { return }
             self.cachePreparedAudio(prepared, for: nextItem.id)
+        }
+        scheduleBackgroundPrefetch(excluding: nextItem.id)
+    }
+
+    /// Resolve a small rotating set of random queue entries in the background.
+    /// This is a general queue optimization; no track is treated as a special first song.
+    private func scheduleBackgroundPrefetch(excluding excludedID: String? = nil) {
+        backgroundPrefetchTask?.cancel()
+        let currentID = items.indices.contains(currentIndex) ? items[currentIndex].id : nil
+        let candidates = items
+            .filter { $0.id != excludedID && $0.id != currentID && preparedDirectCache[$0.id] == nil }
+            .shuffled()
+            .prefix(8)
+        guard !candidates.isEmpty else { return }
+        let candidateItems = Array(candidates)
+        backgroundPrefetchTask = Task { [weak self] in
+            guard let self else { return }
+            for item in candidateItems {
+                guard !Task.isCancelled else { return }
+                let prepared = await self.fetchAudio(
+                    for: item,
+                    updateUI: false,
+                    allowFallback: false,
+                    isPrefetch: true,
+                )
+                guard !Task.isCancelled else { return }
+                if let prepared, prepared.directURL != nil {
+                    self.cachePreparedAudio(prepared, for: item.id)
+                }
+            }
         }
     }
 
