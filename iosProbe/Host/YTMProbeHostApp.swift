@@ -531,6 +531,7 @@ final class ProbeModel: ObservableObject {
     }
 
     private func installPlayerObservers(item: AVPlayerItem, track: ItemDTO) {
+        let trackTitle = track.title
         if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
         statusObserver?.invalidate()
         statusObserver = item.observe(\AVPlayerItem.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -539,7 +540,7 @@ final class ProbeModel: ObservableObject {
                 guard let self else { return }
                 self.playerStatus = "\(status.rawValue)"
                 if status == .readyToPlay {
-                    self.state = "播放中：\(track.title)"
+                    self.state = "播放中：\(trackTitle)"
                     self.verdict = "PROBE_PLAY=PASS resolveMs=\(self.lastResolveMs)"
                 } else if status == .failed {
                     self.state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 播放失败"
