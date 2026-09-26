@@ -79,11 +79,15 @@ final class ProbeModel: ObservableObject {
         }
         Task {
             await readEgress()
-            _ = await playbackProbe.prewarmPlayback(
-                cookie: nil,
-                tokenGroup: "baseline",
-                tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
-            )
+            do {
+                _ = try await playbackProbe.prewarmPlayback(
+                    cookie: nil,
+                    tokenGroup: "baseline",
+                    tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
+                )
+            } catch {
+                // Playback can still resolve lazily if background prewarm fails.
+            }
         }
     }
 
