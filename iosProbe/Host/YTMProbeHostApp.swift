@@ -343,7 +343,7 @@ final class ProbeModel: ObservableObject {
                     client: result.audioClient ?? "unknown",
                     profile: result.audioProfile ?? "unknown",
                     bytes: result.audioExpectedBytes?.int64Value ?? 0,
-                    expiresAt: result.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0 / 1000.0) },
+                    expiresAt: result.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0.doubleValue / 1000.0) },
                 )
             }
 
@@ -459,7 +459,7 @@ final class ProbeModel: ObservableObject {
                 client: fallback.audioClient ?? "unknown",
                 profile: fallback.audioProfile ?? "unknown",
                 bytes: Int64(data.count),
-                expiresAt: fallback.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0 / 1000.0) },
+                expiresAt: fallback.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0.doubleValue / 1000.0) },
             )
         } catch {
             if updateUI {
