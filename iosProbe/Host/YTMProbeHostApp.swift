@@ -37,6 +37,7 @@ final class ProbeModel: ObservableObject {
     private struct PreparedAudio {
         let data: Data?
         let directURL: URL?
+        let streamState: StreamingAudioState?
         let mimeType: String
         let client: String
         let profile: String
@@ -50,6 +51,7 @@ final class ProbeModel: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeObserver: NSObjectProtocol?
     private var currentTask: Task<Void, Never>?
+    private var streamingHandle: StreamingAudioHandle?
     private var playbackGeneration = 0
     private let kit = YTMKit()
     private var configuredAudio = false
@@ -171,6 +173,20 @@ final class ProbeModel: ObservableObject {
             if let directURL = prepared.directURL {
                 item = AVPlayerItem(url: directURL)
                 transport = "DIRECT / \(prepared.mimeType)"
+            } else if let streamState = prepared.streamState {
+                let server = LoopbackRangeServer(streamState: streamState, mimeType: prepared.mimeType)
+                rangeServer = server
+                do {
+                    try server.start()
+                } catch {
+                    state = "本地音频服务启动失败"
+                    failureDetail = "stage=loopback\n\((error as NSError).localizedDescription)"
+                    verdict = "PROBE_PLAY=FAIL reason=loopback"
+                    stopAfterFailure(index: index)
+                    return
+                }
+                item = AVPlayerItem(url: server.url)
+                transport = "SABR streaming / \(prepared.mimeType)"
             } else if let data = prepared.data {
                 let server = LoopbackRangeServer(data: data, mimeType: prepared.mimeType)
                 rangeServer = server
@@ -257,45 +273,56 @@ final class ProbeModel: ObservableObject {
                 return PreparedAudio(
                     data: nil,
                     directURL: directURL,
+                    streamState: nil,
                     mimeType: result.audioMimeType ?? "audio/mp4",
                     client: result.audioClient ?? "unknown",
                     profile: result.audioProfile ?? "unknown",
-                    bytes: result.audioExpectedBytes ?? 0,
+                    bytes: result.audioExpectedBytes?.int64Value ?? 0,
                 )
             }
 
-            // Some iOS profiles expose only SABR. Keep the proven fallback,
-            // but use it only when a direct MP4 URL was not available.
-            let fallback = try await YTMProbe().run(
-                playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+            let streamState = StreamingAudioState()
+            let sink = StreamingAudioSink(state: streamState)
+            guard let handle = try await YTMProbe().startStreaming(
                 videoId: item.id,
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                candidateVideoIds: [item.id],
-                sampleCount: 1,
-                collectFullAudio: true,
-                forceSabr: true,
-                fastPlayback: false,
-            )
-            guard fallback.streamOk, fallback.isSabr, fallback.audioComplete,
-                  let path = fallback.audioCachePath,
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
+                streamSink: sink,
+            ) else {
                 if updateUI {
                     state = "取流失败：\(item.title)"
-                    failureDetail = "\(fallback.streamFailure ?? result.streamFailure ?? "NO_PLAYABLE_STREAM")\n\(fallback.streamDiagnostics)"
+                    failureDetail = "SABR stream unavailable"
                     verdict = "PROBE_PLAY=FAIL reason=stream"
                 }
                 return nil
             }
-            try? FileManager.default.removeItem(atPath: fallback.audioCachePath ?? "")
+            streamingHandle = handle
+            let deadline = Date().addingTimeInterval(12)
+            while Date() < deadline {
+                let snapshot = streamState.snapshot()
+                if snapshot.available >= 256 * 1024 || snapshot.completed { break }
+                if Task.isCancelled { handle.close(); return nil }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let snapshot = streamState.snapshot()
+            guard snapshot.available > 0, !snapshot.path.isEmpty else {
+                handle.close()
+                if updateUI {
+                    state = "SABR 首段不可用：\(item.title)"
+                    failureDetail = snapshot.failure ?? "no_initial_media_bytes"
+                    verdict = "PROBE_PLAY=FAIL reason=sabr_initial_segment"
+                }
+                return nil
+            }
             return PreparedAudio(
-                data: data,
+                data: nil,
                 directURL: nil,
-                mimeType: fallback.audioMimeType ?? "audio/mp4",
-                client: fallback.audioClient ?? "unknown",
-                profile: fallback.audioProfile ?? "unknown",
-                bytes: Int64(data.count),
+                streamState: streamState,
+                mimeType: snapshot.mimeType,
+                client: handle.client,
+                profile: handle.profile,
+                bytes: handle.expectedBytes,
             )
         } catch {
             if error is CancellationError || Task.isCancelled { return nil }
@@ -370,6 +397,7 @@ final class ProbeModel: ObservableObject {
                         sampleCount: 1,
                         collectFullAudio: false,
                         forceSabr: true,
+                        fastPlayback: false,
                     )
                     if result?.streamOk == true { break }
                     if attempt < 3 { try? await Task.sleep(for: .milliseconds(350)) }
@@ -445,6 +473,8 @@ final class ProbeModel: ObservableObject {
         }
         player?.pause()
         player?.replaceCurrentItem(with: nil)
+        streamingHandle?.close()
+        streamingHandle = nil
         player = nil
         isPlaying = false
         rangeServer = nil

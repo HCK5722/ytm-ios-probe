@@ -42,11 +42,84 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
 import kotlin.time.TimeSource
 
 public class YTMProbe {
+    /** Resolves one SABR stream, then keeps downloading it into a growing file. */
+    @OptIn(ExperimentalSabrApi::class)
+    public suspend fun startStreaming(
+        videoId: String,
+        cookie: String? = null,
+        tokenGroup: String = "baseline",
+        tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
+        streamSink: AudioStreamSink,
+    ): StreamingAudioHandle? {
+        val client = createHttpClient(probeEngine())
+        val innerTube = InnerTube(client)
+        try {
+            cookie?.trim()?.takeIf(String::isNotEmpty)?.let {
+                innerTube.cookie = it
+                innerTube.useLoginForBrowse = true
+            }
+            val cipher = YouTubeCipherService(client)
+            val tokenProvider = if (tokenGroup == "2a") BgutilTokenProvider(client, tokenServiceUrl, mutableListOf()) else null
+            val extractor = InnerTubeExtractor(
+                configParser = YtConfigParserImpl(client, innerTube),
+                cipherService = cipher,
+                innerTube = innerTube,
+                tokenProvider = tokenProvider,
+            )
+            val stream = extractor.extract(
+                videoId = videoId,
+                hints = ContentHints(wantVideo = false, sabrFirst = true),
+                audioQuality = AudioQuality.MP4,
+            ) ?: run {
+                innerTube.close(); client.close(); return null
+            }
+            val bootstrap = stream.sabrBootstrap ?: run {
+                innerTube.close(); client.close(); return null
+            }
+            val path = createStreamingAudioFile() ?: run {
+                innerTube.close(); client.close(); return null
+            }
+            streamSink.onStreamStarted(path, stream.mimeType ?: "audio/mp4", stream.clientName ?: "unknown", stream.profileId ?: "unknown", (stream.contentLengthBytes ?: 0L).toString())
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val job = scope.launch {
+                try {
+                    collectAudio(client, stream, path, streamSink)
+                    streamSink.onStreamCompleted()
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    streamSink.onStreamFailed(error::class.simpleName ?: "SabrProtocolException", sanitizeFailureMessage(error.message).orEmpty())
+                } finally {
+                    innerTube.close()
+                    client.close()
+                }
+            }
+            return StreamingAudioHandle(
+                path = path,
+                mimeType = stream.mimeType ?: "audio/mp4",
+                client = stream.clientName ?: "unknown",
+                profile = stream.profileId ?: "unknown",
+                expectedBytes = stream.contentLengthBytes ?: 0L,
+                job = job,
+                scope = scope,
+                closeResources = { innerTube.close(); client.close() },
+            )
+        } catch (error: Throwable) {
+            innerTube.close(); client.close()
+            streamSink.onStreamFailed(error::class.simpleName ?: "KotlinException", sanitizeFailureMessage(error.message).orEmpty())
+            return null
+        }
+    }
+
     @Throws(Exception::class)
     public suspend fun run(
         playlistId: String,
@@ -59,6 +132,7 @@ public class YTMProbe {
         collectFullAudio: Boolean = false,
         forceSabr: Boolean = false,
         fastPlayback: Boolean = false,
+        streamSink: AudioStreamSink? = null,
     ): ProbeResult {
         val logLines = mutableListOf<String>()
         var stage = "init"
@@ -139,6 +213,8 @@ public class YTMProbe {
             val streamRunSummaries = mutableListOf<String>()
             val sampleTrackResults = mutableListOf<String>()
             var selectedStreamBytesPulled = 0L
+            var selectedPrefixReadable = false
+            var selectedPrefixFailure: String? = null
             for (candidate in streamCandidates) {
                 streamAttempts += 1
                 stage = "stream_extract:$candidate"
@@ -154,9 +230,20 @@ public class YTMProbe {
                     if (candidateStream == null) {
                         sampleTrackResults += "videoId=$candidate result=FAIL reason=NULL_STREAM"
                     } else {
-                        val pulledBytes = pullAudioPrefix(client, candidateStream)
-                        val pulled = pulledBytes >= MIN_SAMPLE_BYTES
-                        sampleTrackResults += "videoId=$candidate result=${if (pulled) "PASS" else "FAIL"} reason=${if (pulled) "NONE" else "STREAM_BYTES_SHORT"} bytesPulled=$pulledBytes client=${candidateStream.clientName ?: "unknown"} profile=${candidateStream.profileId ?: "unknown"} sabr=${candidateStream.sabrBootstrap != null}"
+                        var pulledBytes = 0L
+                        var prefixFailure: String? = null
+                        if (streamSink == null) {
+                            try {
+                                pulledBytes = pullAudioPrefix(client, candidateStream)
+                            } catch (error: Throwable) {
+                                prefixFailure = error::class.simpleName ?: "PREFIX_READ_FAILURE"
+                                logLines += "PROBE_PREFIX_FAIL candidate=$candidate type=$prefixFailure message=${sanitizeFailureMessage(error.message).orEmpty()}"
+                            }
+                        }
+                        val pulled = pulledBytes >= MIN_SAMPLE_BYTES || streamSink != null
+                        selectedPrefixReadable = pulled
+                        selectedPrefixFailure = prefixFailure
+                        sampleTrackResults += "videoId=$candidate result=PASS prefix=${if (pulled) "PASS" else "FAIL"} reason=${prefixFailure ?: if (pulled) "NONE" else "STREAM_BYTES_SHORT"} bytesPulled=$pulledBytes client=${candidateStream.clientName ?: "unknown"} profile=${candidateStream.profileId ?: "unknown"} sabr=${candidateStream.sabrBootstrap != null}"
                         if (stream == null) {
                             stream = candidateStream
                             selectedStreamBytesPulled = pulledBytes
@@ -197,12 +284,31 @@ public class YTMProbe {
             }
 
             stage = "audio_collect"
-            val audioChunks = if (collectFullAudio && stream != null) collectAudio(client, stream!!) else emptyList()
+            val streamingPath = if (streamSink != null && stream?.sabrBootstrap != null) {
+                createStreamingAudioFile()
+            } else null
+            if (streamingPath != null && stream != null) {
+                streamSink?.onStreamStarted(
+                    streamingPath,
+                    stream.mimeType ?: "audio/mp4",
+                    stream.clientName ?: "unknown",
+                    stream.profileId ?: "unknown",
+                    (stream.contentLengthBytes ?: 0L).toString(),
+                )
+            }
+            val audioChunks = if (stream != null && (collectFullAudio || streamingPath != null)) {
+                collectAudio(client, stream!!, streamingPath, streamSink)
+            } else emptyList()
             val streamBytesPulled = if (audioChunks.isNotEmpty()) audioChunks.sumOf { it.size.toLong() } else selectedStreamBytesPulled
             val audioExpectedBytes = stream?.contentLengthBytes
             val audioComplete = collectFullAudio && audioChunks.isNotEmpty() &&
                 (audioExpectedBytes == null || audioExpectedBytes == streamBytesPulled)
-            val audioCachePath = if (audioComplete) cacheAudioChunks(audioChunks) else null
+            val audioCachePath = when {
+                streamingPath != null -> streamingPath
+                audioComplete -> cacheAudioChunks(audioChunks)
+                else -> null
+            }
+            if (streamingPath != null) streamSink?.onStreamCompleted()
 
             val loginStatus: Int
             val loginBytes: Int
@@ -254,6 +360,8 @@ public class YTMProbe {
                 audioExpectedBytes = audioExpectedBytes,
                 audioComplete = audioComplete,
                 audioCachePath = audioCachePath,
+                prefixReadable = selectedPrefixReadable,
+                prefixFailure = selectedPrefixFailure,
                 loginState = loginState,
                 loginStatus = loginStatus,
                 loginBytes = loginBytes,
@@ -262,6 +370,7 @@ public class YTMProbe {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
+            streamSink?.onStreamFailed(error::class.simpleName ?: "KotlinException", sanitizeFailureMessage(error.message).orEmpty())
             return ProbeResult(
                 streamFailure = "${error::class.simpleName ?: "KotlinException"}: ${error.message ?: "no_message"}",
                 failureStage = stage,
@@ -303,6 +412,8 @@ private fun sanitizeFailureMessage(message: String?): String? = message
 private suspend fun collectAudio(
     client: HttpClient,
     stream: com.metrolist.innertubex.extraction.ExtractedStream,
+    streamingPath: String? = null,
+    streamSink: AudioStreamSink? = null,
 ): List<ByteArray> {
     val maximumBytes = MAX_PLAYBACK_CACHE_BYTES
     val chunks = mutableListOf<ByteArray>()
@@ -312,8 +423,14 @@ private suspend fun collectAudio(
         SabrAudioStream(client, bootstrap).bytes().collect { chunk ->
             check(total + chunk.size <= maximumBytes) { "SABR playback probe exceeded 64 MiB cache limit" }
             total += chunk.size
-            chunks += chunk
+            if (streamingPath != null) {
+                val available = appendStreamingAudioFile(streamingPath, chunk)
+                streamSink?.onChunkAvailable(available.toString())
+            } else {
+                chunks += chunk
+            }
         }
+        if (streamingPath != null) finishStreamingAudioFile(streamingPath)
         return chunks
     }
     if (!stream.audioUrl.startsWith("https://")) return emptyList()
@@ -337,6 +454,9 @@ private suspend fun collectAudio(
 }
 
 internal expect fun cacheAudioChunks(chunks: List<ByteArray>): String?
+internal expect fun createStreamingAudioFile(): String?
+internal expect fun appendStreamingAudioFile(path: String, chunk: ByteArray): Long
+internal expect fun finishStreamingAudioFile(path: String)
 
 private fun extractPlaylistVideoIds(body: String): List<String> {
     val ids = linkedSetOf<String>()

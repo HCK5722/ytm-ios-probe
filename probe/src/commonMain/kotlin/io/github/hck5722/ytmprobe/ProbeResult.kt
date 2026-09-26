@@ -1,5 +1,17 @@
 package io.github.hck5722.ytmprobe
 
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
+
+/** Receives progress from a SABR stream written incrementally to disk. */
+public interface AudioStreamSink {
+    public fun onStreamStarted(path: String, mimeType: String, client: String, profile: String, expectedBytes: String)
+    public fun onChunkAvailable(bytesAvailable: String)
+    public fun onStreamCompleted()
+    public fun onStreamFailed(type: String, message: String)
+}
+
 public class ProbeResult(
     public val darwinHttpOk: Boolean = false,
     public val darwinStatus: Int = 0,
@@ -37,4 +49,25 @@ public class ProbeResult(
     public val failureStage: String? = null,
     public val failureType: String? = null,
     public val failureMessage: String? = null,
+    public val prefixReadable: Boolean = false,
+    public val prefixFailure: String? = null,
+    public val audioStreamHandle: StreamingAudioHandle? = null,
 )
+
+/** Owns a background SABR writer and its network resources. */
+public class StreamingAudioHandle internal constructor(
+    public val path: String,
+    public val mimeType: String,
+    public val client: String,
+    public val profile: String,
+    public val expectedBytes: Long,
+    private val job: Job,
+    private val scope: CoroutineScope,
+    private val closeResources: () -> Unit,
+) {
+    public fun close() {
+        job.cancel()
+        scope.cancel()
+        closeResources()
+    }
+}

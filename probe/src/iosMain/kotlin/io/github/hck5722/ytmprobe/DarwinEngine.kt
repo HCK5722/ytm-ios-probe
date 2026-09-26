@@ -11,6 +11,11 @@ import platform.Foundation.NSFileManager
 import platform.Foundation.NSUUID
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.create
+import platform.Foundation.NSFileHandle
+import platform.Foundation.fileHandleForWritingAtPath
+import platform.Foundation.writeData
+import platform.Foundation.seekToEndOfFile
+import platform.Foundation.closeFile
 
 internal actual fun probeEngine(): HttpClientEngine = Darwin.create()
 
@@ -32,3 +37,29 @@ internal actual fun cacheAudioChunks(chunks: List<ByteArray>): String? {
     }
     return if (NSFileManager.defaultManager.createFileAtPath(path, data, null)) path else null
 }
+
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+internal actual fun createStreamingAudioFile(): String? {
+    val path = NSTemporaryDirectory() + "ytm-probe-stream-${NSUUID().UUIDString}.mp4"
+    return if (NSFileManager.defaultManager.createFileAtPath(path, null, null)) {
+        streamFileLengths[path] = 0L
+        path
+    } else null
+}
+
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+internal actual fun appendStreamingAudioFile(path: String, chunk: ByteArray): Long {
+    if (chunk.isEmpty()) return streamFileLengths[path] ?: 0L
+    val data = chunk.usePinned { pinned -> NSData.create(bytes = pinned.addressOf(0), length = chunk.size.toULong()) }
+    val handle = NSFileHandle.fileHandleForWritingAtPath(path) ?: return 0L
+    handle.seekToEndOfFile()
+    handle.writeData(data)
+    handle.closeFile()
+    val length = (streamFileLengths[path] ?: 0L) + chunk.size
+    streamFileLengths[path] = length
+    return length
+}
+
+internal actual fun finishStreamingAudioFile(path: String) { streamFileLengths.remove(path) }
+
+private val streamFileLengths = mutableMapOf<String, Long>()
