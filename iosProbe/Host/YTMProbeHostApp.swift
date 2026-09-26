@@ -284,20 +284,20 @@ final class ProbeModel: ObservableObject {
 
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
-            guard let handle = try await YTMProbe().startStreaming(
+            let handle = try await YTMProbe().startStreaming(
                 videoId: item.id,
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
                 streamSink: sink,
-            ) else {
-                if updateUI {
-                    state = "取流失败：\(item.title)"
-                    failureDetail = "SABR stream unavailable"
-                    verdict = "PROBE_PLAY=FAIL reason=stream"
-                }
-                return nil
+            )
+            if handle == nil {
+                // Keep the previously verified playback path as a hard
+                // fallback. A streaming session must never make all playback
+                // unavailable when extractor setup changes upstream.
+                return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
             }
+            guard let handle else { return nil }
             streamingHandle = handle
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
@@ -330,6 +330,51 @@ final class ProbeModel: ObservableObject {
             if updateUI {
                 state = "取流异常：\(item.title)"
                 failureDetail = (error as NSError).localizedDescription
+                verdict = "PROBE_PLAY=FAIL reason=stream_exception"
+            }
+            return nil
+        }
+    }
+
+    private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
+        do {
+            let fallback = try await YTMProbe().run(
+                playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+                videoId: item.id,
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                candidateVideoIds: [item.id],
+                sampleCount: 1,
+                collectFullAudio: true,
+                forceSabr: true,
+                fastPlayback: false,
+                streamSink: nil,
+            )
+            guard fallback.streamOk, fallback.isSabr, fallback.audioComplete,
+                  let path = fallback.audioCachePath,
+                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
+                if updateUI {
+                    state = "取流失败：\(item.title)"
+                    failureDetail = "streaming_init_failed\n\(fallback.streamFailure ?? "NO_PLAYABLE_STREAM")\n\(fallback.streamDiagnostics)"
+                    verdict = "PROBE_PLAY=FAIL reason=stream"
+                }
+                return nil
+            }
+            try? FileManager.default.removeItem(atPath: path)
+            return PreparedAudio(
+                data: data,
+                directURL: nil,
+                streamState: nil,
+                mimeType: fallback.audioMimeType ?? "audio/mp4",
+                client: fallback.audioClient ?? "unknown",
+                profile: fallback.audioProfile ?? "unknown",
+                bytes: Int64(data.count),
+            )
+        } catch {
+            if updateUI {
+                state = "取流异常：\(item.title)"
+                failureDetail = "streaming_init_failed\n\((error as NSError).localizedDescription)"
                 verdict = "PROBE_PLAY=FAIL reason=stream_exception"
             }
             return nil

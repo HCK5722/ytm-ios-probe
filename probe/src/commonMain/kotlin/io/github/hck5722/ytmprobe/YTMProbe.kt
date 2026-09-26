@@ -67,6 +67,11 @@ public class YTMProbe {
                 innerTube.cookie = it
                 innerTube.useLoginForBrowse = true
             }
+            // The extractor needs the current YouTube Music config/cipher
+            // before resolving a playback client. The previous full-buffer
+            // path performed this warm-up; the first streaming version did
+            // not, which made it return "stream unavailable" on iOS.
+            client.get("https://music.youtube.com/").bodyAsText()
             val cipher = YouTubeCipherService(client)
             val tokenProvider = if (tokenGroup == "2a") BgutilTokenProvider(client, tokenServiceUrl, mutableListOf()) else null
             val extractor = InnerTubeExtractor(
@@ -75,6 +80,7 @@ public class YTMProbe {
                 innerTube = innerTube,
                 tokenProvider = tokenProvider,
             )
+            extractor.prewarm()
             val stream = extractor.extract(
                 videoId = videoId,
                 hints = ContentHints(wantVideo = false, sabrFirst = true),
