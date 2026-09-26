@@ -40,6 +40,7 @@ public class ProbeResult(
     public val streamUrlObtained: Boolean = false,
     public val audioChunks: List<ByteArray> = emptyList(),
     public val audioExpectedBytes: Long? = null,
+    public val audioExpiresAtMs: Long? = null,
     public val audioComplete: Boolean = false,
     public val audioCachePath: String? = null,
     public val loginState: String = "SKIP_NO_CREDENTIAL",

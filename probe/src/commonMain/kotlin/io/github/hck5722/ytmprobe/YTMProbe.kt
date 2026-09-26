@@ -5,6 +5,7 @@ import com.metrolist.innertubex.InnerTubeLogEvent
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.bodyAsTextLimited
 import com.metrolist.innertubex.cipher.YouTubeCipherService
+import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
 import com.metrolist.innertubex.extraction.AudioQuality
 import com.metrolist.innertubex.extraction.ContentHints
 import com.metrolist.innertubex.extraction.InnerTubeExtractor
@@ -13,6 +14,7 @@ import com.metrolist.innertubex.extraction.StreamResolveException
 import com.metrolist.innertubex.extraction.TokenProvider
 import com.metrolist.innertubex.extraction.TokenProviderCapabilities
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
+import com.metrolist.innertubex.extraction.YtConfigParser
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.YouTubeLocale
@@ -71,9 +73,10 @@ public class YTMProbe {
     ): Boolean {
         if (tokenGroup != "baseline") return false
         return runCatching {
-            // Generic warm-up only: create the shared HTTP/extractor bundle, never a song.
-            // Every random track still resolves its own direct URL at play time.
-            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
+            // Publish the shared bundle before warming it. Playback can then enter
+            // the direct client path concurrently instead of waiting on warm-up.
+            val bundle = getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
+            bundle.extractor.prewarm()
         }.isSuccess
     }
 
@@ -402,6 +405,7 @@ public class YTMProbe {
                 streamUrlObtained = stream != null && stream.audioUrl.isNotBlank(),
                 audioChunks = audioChunks,
                 audioExpectedBytes = audioExpectedBytes,
+                audioExpiresAtMs = stream?.expiresAt?.toEpochMilliseconds(),
                 audioComplete = audioComplete,
                 audioCachePath = audioCachePath,
                 prefixReadable = selectedPrefixReadable,
@@ -468,17 +472,17 @@ public class YTMProbe {
                 innerTube.cookie = it
                 innerTube.useLoginForBrowse = true
             }
-            // Fast/direct playback uses the explicit VISIONOS_0_1 client and an empty
-            // player config; downloading the Music HTML here only adds a cold-start RTT.
-            if (warm) client.get("https://music.youtube.com/").bodyAsText()
-            val cipher = YouTubeCipherService(client, logger = logger)
+            val configRepository = createPlayerConfigRepository()
+            val remoteStore = RemotePlayerConfigStore(client, configRepository, logger)
+            val cipher = YouTubeCipherService(client, remoteStore, logger)
             val tokenProvider = if (tokenGroup == "2a") {
                 BgutilTokenProvider(client, tokenServiceUrl, mutableListOf())
             } else {
                 null
             }
             val extractor = InnerTubeExtractor(
-                configParser = YtConfigParserImpl(client, innerTube, logger = logger),
+                configParser = YtConfigParserImpl(client, innerTube, remoteStore, logger)
+                    .withEmbeddedConfigFallback(),
                 cipherService = cipher,
                 innerTube = innerTube,
                 tokenProvider = tokenProvider,
@@ -492,6 +496,16 @@ public class YTMProbe {
             throw error
         }
     }
+
+    private fun YtConfigParser.withEmbeddedConfigFallback(): YtConfigParser =
+        object : YtConfigParser by this {
+            override suspend fun fetchConfig(videoId: String, useLoginCookies: Boolean): com.metrolist.innertubex.extraction.PlayerConfig =
+                try {
+                    this@withEmbeddedConfigFallback.fetchConfig(videoId, useLoginCookies)
+                } catch (_: IllegalStateException) {
+                    this@withEmbeddedConfigFallback.fetchEmbeddedConfig(videoId, useLoginCookies = false)
+                }
+        }
 
     private companion object {
         private const val MAX_RESPONSE_BYTES: Int = 8 * 1024 * 1024

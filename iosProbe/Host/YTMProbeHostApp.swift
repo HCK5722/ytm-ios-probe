@@ -44,6 +44,7 @@ final class ProbeModel: ObservableObject {
         let client: String
         let profile: String
         let bytes: Int64
+        let expiresAt: Date?
     }
 
     private var player: AVPlayer?
@@ -264,17 +265,36 @@ final class ProbeModel: ObservableObject {
     }
 
     private func fetchAudio(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
-        if let cached = preparedDirectCache.removeValue(forKey: item.id) {
+        if let cached = preparedDirectCache[item.id], isUsable(cached) {
             return cached
         }
+        preparedDirectCache.removeValue(forKey: item.id)
         if prefetchingTrackId == item.id {
             await prefetchTask?.value
             prefetchingTrackId = nil
-            if let cached = preparedDirectCache.removeValue(forKey: item.id) {
+            if let cached = preparedDirectCache[item.id], isUsable(cached) {
                 return cached
             }
+            preparedDirectCache.removeValue(forKey: item.id)
         }
-        return await fetchAudio(for: item, updateUI: updateUI, allowFallback: true)
+        let prepared = await fetchAudio(for: item, updateUI: updateUI, allowFallback: true)
+        if let prepared, prepared.directURL != nil {
+            cachePreparedAudio(prepared, for: item.id)
+        }
+        return prepared
+    }
+
+    private func isUsable(_ prepared: PreparedAudio) -> Bool {
+        guard let expiresAt = prepared.expiresAt else { return true }
+        return expiresAt.timeIntervalSinceNow > 15
+    }
+
+    private func cachePreparedAudio(_ prepared: PreparedAudio, for mediaId: String) {
+        guard prepared.directURL != nil else { return }
+        preparedDirectCache[mediaId] = prepared
+        if preparedDirectCache.count > 100 {
+            preparedDirectCache.removeValue(forKey: preparedDirectCache.keys.first ?? mediaId)
+        }
     }
 
     private func fetchAudio(for item: ItemDTO, updateUI: Bool, allowFallback: Bool, isPrefetch: Bool = false) async -> PreparedAudio? {
@@ -282,11 +302,11 @@ final class ProbeModel: ObservableObject {
             if !isPrefetch, prefetchingTrackId == item.id {
                 await prefetchTask?.value
                 prefetchingTrackId = nil
-                if let cached = preparedDirectCache.removeValue(forKey: item.id) {
+                if let cached = preparedDirectCache[item.id], isUsable(cached) {
                     return cached
                 }
+                preparedDirectCache.removeValue(forKey: item.id)
             }
-            await playbackPrewarmTask?.value
             let result = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
                 videoId: item.id,
@@ -323,6 +343,7 @@ final class ProbeModel: ObservableObject {
                     client: result.audioClient ?? "unknown",
                     profile: result.audioProfile ?? "unknown",
                     bytes: result.audioExpectedBytes?.int64Value ?? 0,
+                    expiresAt: result.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0 / 1000.0) },
                 )
             }
 
@@ -371,6 +392,7 @@ final class ProbeModel: ObservableObject {
                 client: handle.client,
                 profile: handle.profile,
                 bytes: handle.expectedBytes,
+                expiresAt: nil,
             )
         } catch {
             if error is CancellationError || Task.isCancelled { return nil }
@@ -397,7 +419,7 @@ final class ProbeModel: ObservableObject {
             let prepared = await self.fetchAudio(for: nextItem, updateUI: false, allowFallback: false, isPrefetch: true)
             guard !Task.isCancelled, generation == self.playbackGeneration,
                   let prepared, prepared.directURL != nil else { return }
-            self.preparedDirectCache[nextItem.id] = prepared
+            self.cachePreparedAudio(prepared, for: nextItem.id)
         }
     }
 
@@ -437,6 +459,7 @@ final class ProbeModel: ObservableObject {
                 client: fallback.audioClient ?? "unknown",
                 profile: fallback.audioProfile ?? "unknown",
                 bytes: Int64(data.count),
+                expiresAt: fallback.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0 / 1000.0) },
             )
         } catch {
             if updateUI {
