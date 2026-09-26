@@ -84,39 +84,32 @@ public class YTMProbe {
         tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
         streamSink: AudioStreamSink,
     ): StreamingAudioHandle? {
-        val client = createHttpClient(probeEngine())
-        val innerTube = InnerTube(client)
+        val useCachedPlaybackBundle = tokenGroup == "baseline"
+        val bundle = if (useCachedPlaybackBundle) {
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE)
+        } else {
+            createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = true)
+        }
+        val client = bundle.client
+        val innerTube = bundle.innerTube
+        val extractor = bundle.extractor
         try {
             cookie?.trim()?.takeIf(String::isNotEmpty)?.let {
                 innerTube.cookie = it
                 innerTube.useLoginForBrowse = true
             }
-            // The extractor needs the current YouTube Music config/cipher
-            // before resolving a playback client. The previous full-buffer
-            // path performed this warm-up; the first streaming version did
-            // not, which made it return "stream unavailable" on iOS.
-            client.get("https://music.youtube.com/").bodyAsText()
-            val cipher = YouTubeCipherService(client)
-            val tokenProvider = if (tokenGroup == "2a") BgutilTokenProvider(client, tokenServiceUrl, mutableListOf()) else null
-            val extractor = InnerTubeExtractor(
-                configParser = YtConfigParserImpl(client, innerTube),
-                cipherService = cipher,
-                innerTube = innerTube,
-                tokenProvider = tokenProvider,
-            )
-            extractor.prewarm()
             val stream = extractor.extract(
                 videoId = videoId,
                 hints = ContentHints(wantVideo = false, sabrFirst = true),
                 audioQuality = AudioQuality.MP4,
             ) ?: run {
-                innerTube.close(); client.close(); return null
+                if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
             val bootstrap = stream.sabrBootstrap ?: run {
-                innerTube.close(); client.close(); return null
+                if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
             val path = createStreamingAudioFile() ?: run {
-                innerTube.close(); client.close(); return null
+                if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
             streamSink.onStreamStarted(path, stream.mimeType ?: "audio/mp4", stream.clientName ?: "unknown", stream.profileId ?: "unknown", (stream.contentLengthBytes ?: 0L).toString())
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -129,8 +122,10 @@ public class YTMProbe {
                 } catch (error: Throwable) {
                     streamSink.onStreamFailed(error::class.simpleName ?: "SabrProtocolException", sanitizeFailureMessage(error.message).orEmpty())
                 } finally {
-                    innerTube.close()
-                    client.close()
+                    if (!useCachedPlaybackBundle) {
+                        innerTube.close()
+                        client.close()
+                    }
                 }
             }
             return StreamingAudioHandle(
@@ -141,10 +136,18 @@ public class YTMProbe {
                 expectedBytes = stream.contentLengthBytes ?: 0L,
                 job = job,
                 scope = scope,
-                closeResources = { innerTube.close(); client.close() },
+                closeResources = {
+                    if (!useCachedPlaybackBundle) {
+                        innerTube.close()
+                        client.close()
+                    }
+                },
             )
         } catch (error: Throwable) {
-            innerTube.close(); client.close()
+            if (!useCachedPlaybackBundle) {
+                innerTube.close()
+                client.close()
+            }
             streamSink.onStreamFailed(error::class.simpleName ?: "KotlinException", sanitizeFailureMessage(error.message).orEmpty())
             return null
         }
@@ -251,7 +254,10 @@ public class YTMProbe {
                             .withStreamCapabilities(
                                 allowHls = false,
                                 allowSabr = forceSabr,
-                                allowBoundedRange = true,
+                                // AVPlayer can issue its own Range requests. Requiring
+                                // a preflight content-length check adds a CDN round-trip
+                                // and can discard an otherwise playable direct URL.
+                                allowBoundedRange = !fastPlayback,
                             ),
                         // AVPlayer on iOS cannot consume the WebM/Opus stream selected by AUTO.
                         // Prefer the MP4/AAC representation for the playback-chain probe.

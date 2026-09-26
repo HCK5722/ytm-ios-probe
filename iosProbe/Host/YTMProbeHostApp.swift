@@ -289,10 +289,11 @@ final class ProbeModel: ObservableObject {
                 }
                 return nil
             }
-            if result.streamOk, !result.isSabr,
+            if result.streamOk,
                let urlString = result.audioUrl,
                let directURL = URL(string: urlString),
-               directURL.scheme == "https" {
+               directURL.scheme == "https",
+               !urlString.hasPrefix("sabr://") {
                 return PreparedAudio(
                     data: nil,
                     directURL: directURL,
