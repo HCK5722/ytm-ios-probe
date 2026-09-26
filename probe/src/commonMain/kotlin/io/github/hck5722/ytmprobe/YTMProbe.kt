@@ -274,13 +274,22 @@ public class YTMProbe {
                 try {
                     val candidateStream = if (directPlayerFastPath && !forceSabr) {
                         val directStartedAt = TimeSource.Monotonic.markNow()
-                        val direct = extractDirectPlayerAudio(innerTube, candidate)
-                        logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} ${direct.diagnostic}"
-                        // Fast playback is a direct-media contract. Do not
-                        // silently turn a failed direct request into a 9-10s
-                        // SABR resolution; the caller can show the actual
-                        // direct-client failure and retry another client.
-                        direct.stream
+                        val directHints = ContentHints(
+                            wantVideo = false,
+                            playbackClientOverrideId = playbackClientOverrideId,
+                            sabrFirst = false,
+                        ).withStreamCapabilities(
+                            allowHls = false,
+                            allowSabr = false,
+                            allowBoundedRange = false,
+                        )
+                        val formalDirect = extractor.extract(
+                            videoId = candidate,
+                            hints = directHints,
+                            audioQuality = AudioQuality.MP4,
+                        )
+                        logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} formal=${formalDirect != null} client=${formalDirect?.clientName ?: "none"} profile=${formalDirect?.profileId ?: "none"} mime=${formalDirect?.mimeType ?: "none"} sabr=${formalDirect?.sabrBootstrap != null}"
+                        formalDirect
                     } else {
                         extractor.extract(
                             videoId = candidate,
@@ -639,15 +648,7 @@ private suspend fun extractDirectPlayerAudio(
     // Kotlin/Native/Darwin so worker concurrency cannot mix request contexts.
     val results = buildList {
         for (client in candidates) {
-            val directClient = createHttpClient(probeEngine())
-            val directInnerTube = InnerTube(directClient)
-            val result = try {
-                directInnerTube.locale = initialSession.locale
-                extractDirectPlayerAudioForClient(directInnerTube, videoId, visitorData, client)
-            } finally {
-                directInnerTube.close()
-                directClient.close()
-            }
+            val result = extractDirectPlayerAudioForClient(innerTube, videoId, visitorData, client)
             add(result)
             if (result.stream != null) break
         }
