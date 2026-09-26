@@ -48,9 +48,33 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.time.TimeSource
 
 public class YTMProbe {
+    private data class PlaybackBundle(
+        val client: HttpClient,
+        val innerTube: InnerTube,
+        val extractor: InnerTubeExtractor,
+    )
+
+    private val playbackBundleMutex = Mutex()
+    private var cachedPlaybackBundle: PlaybackBundle? = null
+    private var cachedPlaybackKey: String? = null
+
+    /** Preloads the same extractor bundle that Metrolist keeps alive globally. */
+    public suspend fun prewarmPlayback(
+        cookie: String? = null,
+        tokenGroup: String = "baseline",
+        tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
+    ): Boolean {
+        if (tokenGroup != "baseline") return false
+        return runCatching {
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE)
+        }.isSuccess
+    }
+
     /** Resolves one SABR stream, then keeps downloading it into a growing file. */
     @OptIn(ExperimentalSabrApi::class)
     public suspend fun startStreaming(
@@ -154,8 +178,15 @@ public class YTMProbe {
                     " tokenPresent=" + tokenPresent
             }
         }
-        val client = createHttpClient(probeEngine())
-        val innerTube = InnerTube(client, logger = logger)
+        val useCachedPlaybackBundle = fastPlayback && tokenGroup == "baseline"
+        val bundle = if (useCachedPlaybackBundle) {
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger)
+        } else {
+            createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = !fastPlayback)
+        }
+        val client = bundle.client
+        val innerTube = bundle.innerTube
+        val extractor = bundle.extractor
         try {
             val normalizedCookie = cookie?.trim()?.takeIf(String::isNotEmpty)
             if (normalizedCookie != null) {
@@ -190,22 +221,8 @@ public class YTMProbe {
             } else null
             val searchBody = searchResponse?.bodyAsTextLimited(MAX_RESPONSE_BYTES).orEmpty()
 
-            val cipher = YouTubeCipherService(client, logger = logger)
-            val externalTokenProvider = if (tokenGroup == "2a") {
-                BgutilTokenProvider(client, tokenServiceUrl, logLines)
-            } else {
-                null
-            }
             stage = "extractor_init"
-            val extractor = InnerTubeExtractor(
-                configParser = YtConfigParserImpl(client, innerTube, logger = logger),
-                cipherService = cipher,
-                innerTube = innerTube,
-                tokenProvider = externalTokenProvider,
-                logger = logger,
-            )
             stage = "extractor_prewarm"
-            if (!fastPlayback) extractor.prewarm()
             val streamCandidates =
                 (candidateVideoIds + extractPlaylistVideoIds(browseBody))
                     .distinct()
@@ -245,7 +262,7 @@ public class YTMProbe {
                     } else {
                         var pulledBytes = 0L
                         var prefixFailure: String? = null
-                        if (streamSink == null) {
+                        if (streamSink == null && !fastPlayback) {
                             try {
                                 pulledBytes = pullAudioPrefix(client, candidateStream)
                             } catch (error: Throwable) {
@@ -253,7 +270,8 @@ public class YTMProbe {
                                 logLines += "PROBE_PREFIX_FAIL candidate=$candidate type=$prefixFailure message=${sanitizeFailureMessage(error.message).orEmpty()}"
                             }
                         }
-                        val pulled = pulledBytes >= MIN_SAMPLE_BYTES || streamSink != null
+                        val pulled = fastPlayback && candidateStream.audioUrl.startsWith("https://") ||
+                            pulledBytes >= MIN_SAMPLE_BYTES || streamSink != null
                         selectedPrefixReadable = pulled
                         selectedPrefixFailure = prefixFailure
                         sampleTrackResults += "videoId=$candidate result=PASS prefix=${if (pulled) "PASS" else "FAIL"} reason=${prefixFailure ?: if (pulled) "NONE" else "STREAM_BYTES_SHORT"} bytesPulled=$pulledBytes client=${candidateStream.clientName ?: "unknown"} profile=${candidateStream.profileId ?: "unknown"} sabr=${candidateStream.sabrBootstrap != null}"
@@ -397,8 +415,65 @@ public class YTMProbe {
                 diagnostic = logLines.takeLast(120).joinToString("\n"),
             )
         } finally {
+            if (!useCachedPlaybackBundle) {
+                innerTube.close()
+                client.close()
+            }
+        }
+    }
+
+    private suspend fun getCachedPlaybackBundle(
+        cookie: String?,
+        tokenGroup: String,
+        tokenServiceUrl: String,
+        logger: InnerTubeLogger,
+    ): PlaybackBundle = playbackBundleMutex.withLock {
+        val key = "${tokenGroup}:${cookie.orEmpty()}"
+        cachedPlaybackBundle?.takeIf { cachedPlaybackKey == key }?.let { return@withLock it }
+        cachedPlaybackBundle?.let {
+            it.innerTube.close()
+            it.client.close()
+        }
+        val bundle = createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = true)
+        cachedPlaybackBundle = bundle
+        cachedPlaybackKey = key
+        bundle
+    }
+
+    private suspend fun createPlaybackBundle(
+        cookie: String?,
+        tokenGroup: String,
+        tokenServiceUrl: String,
+        logger: InnerTubeLogger,
+        warm: Boolean,
+    ): PlaybackBundle {
+        val client = createHttpClient(probeEngine())
+        val innerTube = InnerTube(client, logger = logger)
+        try {
+            cookie?.trim()?.takeIf(String::isNotEmpty)?.let {
+                innerTube.cookie = it
+                innerTube.useLoginForBrowse = true
+            }
+            client.get("https://music.youtube.com/").bodyAsText()
+            val cipher = YouTubeCipherService(client, logger = logger)
+            val tokenProvider = if (tokenGroup == "2a") {
+                BgutilTokenProvider(client, tokenServiceUrl, mutableListOf())
+            } else {
+                null
+            }
+            val extractor = InnerTubeExtractor(
+                configParser = YtConfigParserImpl(client, innerTube, logger = logger),
+                cipherService = cipher,
+                innerTube = innerTube,
+                tokenProvider = tokenProvider,
+                logger = logger,
+            )
+            if (warm) extractor.prewarm()
+            return PlaybackBundle(client, innerTube, extractor)
+        } catch (error: Throwable) {
             innerTube.close()
             client.close()
+            throw error
         }
     }
 

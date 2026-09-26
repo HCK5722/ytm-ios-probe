@@ -55,6 +55,7 @@ final class ProbeModel: ObservableObject {
     private var streamingHandle: StreamingAudioHandle?
     private var playbackGeneration = 0
     private let kit = YTMKit()
+    private let playbackProbe = YTMProbe()
     private var configuredAudio = false
 
     init() {
@@ -76,7 +77,14 @@ final class ProbeModel: ObservableObject {
             let reasonRaw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor in self?.handleRouteChange(reasonRaw: reasonRaw) }
         }
-        Task { await readEgress() }
+        Task {
+            await readEgress()
+            _ = await playbackProbe.prewarmPlayback(
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
+            )
+        }
     }
 
     func start(videoId: String? = nil) {
@@ -214,6 +222,8 @@ final class ProbeModel: ObservableObject {
                 return
             }
             let newPlayer = AVPlayer(playerItem: item)
+            newPlayer.automaticallyWaitsToMinimizeStalling = false
+            item.preferredForwardBufferDuration = 0
             player = newPlayer
             installPlayerObservers(item: item, track: self.items[index])
             let deadline = Date().addingTimeInterval(45)
@@ -251,7 +261,7 @@ final class ProbeModel: ObservableObject {
 
     private func fetchAudio(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
         do {
-            let result = try await YTMProbe().run(
+            let result = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
                 videoId: item.id,
                 cookie: nil,
@@ -290,7 +300,7 @@ final class ProbeModel: ObservableObject {
 
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
-            let handle = try await YTMProbe().startStreaming(
+            let handle = try await playbackProbe.startStreaming(
                 videoId: item.id,
                 cookie: nil,
                 tokenGroup: "baseline",
@@ -345,7 +355,7 @@ final class ProbeModel: ObservableObject {
 
     private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
         do {
-            let fallback = try await YTMProbe().run(
+            let fallback = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
                 videoId: item.id,
                 cookie: nil,
