@@ -50,9 +50,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
@@ -635,20 +632,25 @@ private suspend fun extractDirectPlayerAudio(
         YouTubeClient.VISIONOS_0_1,
         YouTubeClient.VISIONOS,
         YouTubeClient.IOS_MUSIC,
+        YouTubeClient.TVHTML5,
+        YouTubeClient.WEB_REMIX,
     )
-    // A device network can receive different format sets for these closely
-    // related clients. Ask them concurrently so a SABR-only response from one
-    // client does not add another serial multi-second round trip.
-    val results = coroutineScope {
-        candidates.map { client ->
-            async(Dispatchers.Default) {
-                extractDirectPlayerAudioForClient(innerTube, videoId, visitorData, client)
-            }
-        }.awaitAll()
+    // InnerTube owns mutable session state. Keep these requests sequential on
+    // Kotlin/Native/Darwin so worker concurrency cannot mix request contexts.
+    val results = buildList {
+        for (client in candidates) {
+            val result = extractDirectPlayerAudioForClient(innerTube, videoId, visitorData, client)
+            add(result)
+            if (result.stream != null) break
+        }
     }
     return results.firstOrNull { it.stream != null }
-        ?: results.firstOrNull()
-        ?: DirectPlayerExtraction(null, "clients=none result=NO_DIRECT_FORMAT")
+        ?: DirectPlayerExtraction(
+            null,
+            "directClients=" + results.mapIndexed { index, result ->
+                "${candidates[index].clientName}:${result.diagnostic}"
+            }.joinToString(";")
+        )
 }
 
 private suspend fun extractDirectPlayerAudioForClient(
@@ -662,15 +664,15 @@ private suspend fun extractDirectPlayerAudioForClient(
         videoId = videoId,
         requestVisitorData = visitorData,
     )
-    if (!response.status.isSuccess()) return DirectPlayerExtraction(null, "http=${response.status.value} result=HTTP_FAILURE")
+    if (!response.status.isSuccess()) return DirectPlayerExtraction(null, "client=${client.clientName} http=${response.status.value} result=HTTP_FAILURE")
     val body = response.bodyAsText()
     val playerResponse = runCatching {
         DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(body)
-    }.getOrNull() ?: return DirectPlayerExtraction(null, "http=${response.status.value} decode=FAIL bodyChars=${body.length}")
+    }.getOrNull() ?: return DirectPlayerExtraction(null, "client=${client.clientName} http=${response.status.value} decode=FAIL bodyChars=${body.length}")
     val streamingData = playerResponse.streamingData
     if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE") || streamingData == null) {
         val reason = playerResponse.playabilityStatus.reason.orEmpty().replace(Regex("[^A-Za-z0-9 _-]"), "").replace(' ', '_').take(80)
-        return DirectPlayerExtraction(null, "http=${response.status.value} playability=${playerResponse.playabilityStatus.status} reason=${reason.ifBlank { "none" }} visitorPresent=${!visitorData.isNullOrBlank()} streamingData=${streamingData != null}")
+        return DirectPlayerExtraction(null, "client=${client.clientName} http=${response.status.value} playability=${playerResponse.playabilityStatus.status} reason=${reason.ifBlank { "none" }} visitorPresent=${!visitorData.isNullOrBlank()} streamingData=${streamingData != null}")
     }
     val audioFormats = streamingData.adaptiveFormats.filter { it.isAudio }
     val urlFormats = audioFormats.filter { !it.url.isNullOrBlank() }
@@ -680,9 +682,9 @@ private suspend fun extractDirectPlayerAudioForClient(
             it.isAudio && it.signatureCipher.isNullOrBlank() && it.cipher.isNullOrBlank()
         },
         audioQuality = AudioQuality.MP4,
-    ) ?: return DirectPlayerExtraction(null, "http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} mp4=${audioFormats.count { it.mimeType.contains("audio/mp4") }} result=NO_DIRECT_FORMAT")
+    ) ?: return DirectPlayerExtraction(null, "client=${client.clientName} http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} mp4=${audioFormats.count { it.mimeType.contains("audio/mp4") }} result=NO_DIRECT_FORMAT")
     val mediaUrl = format.url?.takeIf { isTrustedDirectAudioUrl(it) && !hasNParameter(it) }
-        ?: return DirectPlayerExtraction(null, "http=${response.status.value} playability=PLAYABLE itag=${format.itag} result=URL_REJECTED")
+        ?: return DirectPlayerExtraction(null, "client=${client.clientName} http=${response.status.value} playability=PLAYABLE itag=${format.itag} result=URL_REJECTED")
     val codec = Regex("codecs=\"([^\"]+)\"").find(format.mimeType)?.groupValues?.getOrNull(1)
     val expiresAt = streamingData.expiresInSeconds?.takeIf { it > 0 }?.let { Clock.System.now() + it.seconds }
     val stream = com.metrolist.innertubex.extraction.ExtractedStream(
