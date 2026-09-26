@@ -639,17 +639,28 @@ private suspend fun extractDirectPlayerAudio(
     // Kotlin/Native/Darwin so worker concurrency cannot mix request contexts.
     val results = buildList {
         for (client in candidates) {
-            val result = extractDirectPlayerAudioForClient(innerTube, videoId, visitorData, client)
+            val directClient = createHttpClient(probeEngine())
+            val directInnerTube = InnerTube(directClient)
+            val result = try {
+                directInnerTube.locale = initialSession.locale
+                extractDirectPlayerAudioForClient(directInnerTube, videoId, visitorData, client)
+            } finally {
+                directInnerTube.close()
+                directClient.close()
+            }
             add(result)
             if (result.stream != null) break
         }
     }
-    return results.firstOrNull { it.stream != null }
+    val diagnosticSummary = results.mapIndexed { index, result ->
+        "${candidates[index].clientName}:${result.diagnostic}"
+    }.joinToString(";")
+    return results.firstOrNull { it.stream != null }?.let { result ->
+        result.copy(diagnostic = "attempted=$diagnosticSummary selected=${result.stream?.profileId}")
+    }
         ?: DirectPlayerExtraction(
             null,
-            "directClients=" + results.mapIndexed { index, result ->
-                "${candidates[index].clientName}:${result.diagnostic}"
-            }.joinToString(";")
+            "directClients=$diagnosticSummary"
         )
 }
 
