@@ -49,6 +49,7 @@ final class ProbeModel: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeObserver: NSObjectProtocol?
     private var currentTask: Task<Void, Never>?
+    private var playbackGeneration = 0
     private let kit = YTMKit()
     private var configuredAudio = false
 
@@ -129,21 +130,24 @@ final class ProbeModel: ObservableObject {
         }
         currentTask?.cancel()
         stopCurrentPlayer()
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
         currentIndex = index
         failureDetail = ""
         state = "准备：\(items[index].title)"
         verdict = "PROBE_PLAY=RUNNING"
         preparing = true
         currentTask = Task { [weak self] in
-            await self?.prepareAndPlay(index: index)
+            await self?.prepareAndPlay(index: index, generation: generation)
         }
     }
 
-    private func prepareAndPlay(index: Int) async {
+    private func prepareAndPlay(index: Int, generation: Int) async {
         defer { preparing = false }
         guard items.indices.contains(index) else { return }
         let item = items[index]
         let prepared = await fetchAudio(for: item, updateUI: true)
+        guard generation == playbackGeneration, !Task.isCancelled else { return }
         guard let prepared else {
             // Do not hide the first real failure by cascading through the
             // entire queue. A failed SABR request needs to remain visible so
@@ -161,6 +165,7 @@ final class ProbeModel: ObservableObject {
                 stopAfterFailure(index: index)
                 return
             }
+            guard generation == playbackGeneration, !Task.isCancelled else { return }
             let server = LoopbackRangeServer(data: prepared.data, mimeType: prepared.mimeType)
             rangeServer = server
             do {
@@ -179,7 +184,9 @@ final class ProbeModel: ObservableObject {
             let deadline = Date().addingTimeInterval(45)
             while item.status == .unknown && Date() < deadline {
                 try await Task.sleep(for: .milliseconds(200))
+                guard generation == playbackGeneration, !Task.isCancelled else { return }
             }
+            guard generation == playbackGeneration, !Task.isCancelled else { return }
             playerStatus = "\(item.status.rawValue)"
             guard item.status == .readyToPlay else {
                 state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 未 readyToPlay"
@@ -195,6 +202,10 @@ final class ProbeModel: ObservableObject {
             transport = "SABR / \(prepared.mimeType)"
             bytes = "\(prepared.bytes)"
             verdict = "PROBE_PLAY=PASS"
+        } catch is CancellationError {
+            // Cancelling the previous track during a deliberate track change
+            // is normal and must never be shown as a playback failure.
+            return
         } catch {
             state = "播放初始化失败"
             let nsError = error as NSError
@@ -244,6 +255,7 @@ final class ProbeModel: ObservableObject {
                 bytes: Int64(data.count),
             )
         } catch {
+            if error is CancellationError || Task.isCancelled { return nil }
             if updateUI {
                 state = "取流异常：\(item.title)"
                 failureDetail = (error as NSError).localizedDescription
@@ -263,7 +275,6 @@ final class ProbeModel: ObservableObject {
     }
 
     private func stopAfterFailure(index: Int) {
-        currentTask?.cancel()
         stopCurrentPlayer()
         isPlaying = false
         state = "播放失败，已停在第 \(index + 1) 首"
