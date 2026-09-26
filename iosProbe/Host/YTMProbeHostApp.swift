@@ -58,7 +58,6 @@ final class ProbeModel: ObservableObject {
     private var playbackGeneration = 0
     private let kit = YTMKit()
     private let playbackProbe = YTMProbe()
-    private var playbackPrewarmTask: Task<Void, Never>?
     private var configuredAudio = false
     private var preparedDirectCache: [String: PreparedAudio] = [:]
     private var prefetchTask: Task<Void, Never>?
@@ -83,20 +82,7 @@ final class ProbeModel: ObservableObject {
             let reasonRaw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor in self?.handleRouteChange(reasonRaw: reasonRaw) }
         }
-        Task {
-            await readEgress()
-        }
-        playbackPrewarmTask = Task {
-            do {
-                _ = try await playbackProbe.prewarmPlayback(
-                    cookie: nil,
-                    tokenGroup: "baseline",
-                    tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
-                )
-            } catch {
-                // Playback can still resolve lazily if background prewarm fails.
-            }
-        }
+        Task { await readEgress() }
     }
 
     func start(videoId: String? = nil) {
@@ -137,7 +123,7 @@ final class ProbeModel: ObservableObject {
             currentIndex = -1
             state = "歌单已加载：\(items.count) 首"
             verdict = "PROBE_QUEUE=PASS items=\(items.count)"
-            prefetchFirstTrack()
+            await prefetchFirstTrack()
             return true
         } catch {
             state = "歌单加载失败"
@@ -289,9 +275,6 @@ final class ProbeModel: ObservableObject {
                     return cached
                 }
             }
-            // Do not let the first user tap race the extractor/cipher prewarm.
-            // Once this task has completed, direct client resolution is normally sub-second.
-            await playbackPrewarmTask?.value
             let result = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
                 videoId: item.id,
@@ -388,19 +371,13 @@ final class ProbeModel: ObservableObject {
         }
     }
 
-    private func prefetchFirstTrack() {
+    private func prefetchFirstTrack() async {
         guard let first = items.first, preparedDirectCache[first.id] == nil else { return }
         prefetchTask?.cancel()
         prefetchingTrackId = first.id
-        prefetchTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.prefetchingTrackId == first.id { self.prefetchingTrackId = nil }
-            }
-            let prepared = await self.fetchAudio(for: first, updateUI: false, allowFallback: false, isPrefetch: true)
-            guard !Task.isCancelled, let prepared, prepared.directURL != nil else { return }
-            self.preparedDirectCache[first.id] = prepared
-        }
+        let prepared = await fetchAudio(for: first, updateUI: false, allowFallback: false, isPrefetch: true)
+        if let prepared, prepared.directURL != nil { preparedDirectCache[first.id] = prepared }
+        if prefetchingTrackId == first.id { prefetchingTrackId = nil }
     }
 
     private func schedulePrefetch(after index: Int, generation: Int) {
@@ -434,6 +411,7 @@ final class ProbeModel: ObservableObject {
                 collectFullAudio: true,
                 forceSabr: true,
                 fastPlayback: false,
+                playbackClientOverrideId: nil,
                 streamSink: nil,
             )
             guard fallback.streamOk, fallback.isSabr, fallback.audioComplete,
@@ -532,6 +510,7 @@ final class ProbeModel: ObservableObject {
                         collectFullAudio: false,
                         forceSabr: true,
                         fastPlayback: false,
+                        playbackClientOverrideId: nil,
                         streamSink: nil,
                     )
                     if result?.streamOk == true, result?.prefixReadable == true { break }

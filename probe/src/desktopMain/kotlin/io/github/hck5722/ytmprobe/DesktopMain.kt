@@ -13,6 +13,7 @@ private data class Options(
     val fastPlayback: Boolean,
     val repeat: Int,
     val clientOverride: String?,
+    val noPrewarm: Boolean,
 )
 
 public fun main(args: Array<String>) {
@@ -32,15 +33,19 @@ public fun main(args: Array<String>) {
     }
 
     val probe = YTMProbe()
-    val prewarmStartedAt = System.nanoTime()
-    val prewarmOk = runBlocking {
-        probe.prewarmPlayback(
-            cookie = options.cookie,
-            tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
-            tokenServiceUrl = options.potUrl,
-        )
+    if (options.noPrewarm) {
+        println("PROBE_PREWARM=SKIP reason=cold_start")
+    } else {
+        val prewarmStartedAt = System.nanoTime()
+        val prewarmOk = runBlocking {
+            probe.prewarmPlayback(
+                cookie = options.cookie,
+                tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
+                tokenServiceUrl = options.potUrl,
+            )
+        }
+        println("PROBE_PREWARM=${if (prewarmOk) "PASS" else "FAIL"} elapsedMs=${(System.nanoTime() - prewarmStartedAt) / 1_000_000}")
     }
-    println("PROBE_PREWARM=${if (prewarmOk) "PASS" else "FAIL"} elapsedMs=${(System.nanoTime() - prewarmStartedAt) / 1_000_000}")
     val startedAt = System.nanoTime()
     val result = runBlocking {
         probe.run(
@@ -107,6 +112,7 @@ private fun parseOptions(args: Array<String>): Options {
     var fastPlayback = false
     var repeat = 1
     var clientOverride: String? = null
+    var noPrewarm = false
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
@@ -116,6 +122,7 @@ private fun parseOptions(args: Array<String>): Options {
             arg == "--fast" -> fastPlayback = true
             arg.startsWith("--repeat=") -> repeat = arg.substringAfter('=').toInt()
             arg.startsWith("--client=") -> clientOverride = arg.substringAfter('=').takeIf(String::isNotBlank)
+            arg == "--cold" -> noPrewarm = true
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
@@ -125,7 +132,7 @@ private fun parseOptions(args: Array<String>): Options {
     require(sampleCount in 1..30) { "--sample-count 必须介于 1 和 30" }
     require(repeat in 1..5) { "--repeat 必须介于 1 和 5" }
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
-    return Options(providers, potUrl, cookie, video, sampleCount, fastPlayback, repeat, clientOverride)
+    return Options(providers, potUrl, cookie, video, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")

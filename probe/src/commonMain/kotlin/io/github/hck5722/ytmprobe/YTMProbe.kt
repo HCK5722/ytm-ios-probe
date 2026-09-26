@@ -466,7 +466,9 @@ public class YTMProbe {
                 innerTube.cookie = it
                 innerTube.useLoginForBrowse = true
             }
-            client.get("https://music.youtube.com/").bodyAsText()
+            // Fast/direct playback uses the explicit VISIONOS_0_1 client and an empty
+            // player config; downloading the Music HTML here only adds a cold-start RTT.
+            if (warm) client.get("https://music.youtube.com/").bodyAsText()
             val cipher = YouTubeCipherService(client, logger = logger)
             val tokenProvider = if (tokenGroup == "2a") {
                 BgutilTokenProvider(client, tokenServiceUrl, mutableListOf())
