@@ -71,7 +71,9 @@ public class YTMProbe {
     ): Boolean {
         if (tokenGroup != "baseline") return false
         return runCatching {
-            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = true)
+            // Generic warm-up only: create the shared HTTP/extractor bundle, never a song.
+            // Every random track still resolves its own direct URL at play time.
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
         }.isSuccess
     }
 
