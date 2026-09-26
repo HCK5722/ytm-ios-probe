@@ -12,6 +12,7 @@ private data class Options(
     val sampleCount: Int,
     val fastPlayback: Boolean,
     val repeat: Int,
+    val clientOverride: String?,
 )
 
 public fun main(args: Array<String>) {
@@ -31,6 +32,15 @@ public fun main(args: Array<String>) {
     }
 
     val probe = YTMProbe()
+    val prewarmStartedAt = System.nanoTime()
+    val prewarmOk = runBlocking {
+        probe.prewarmPlayback(
+            cookie = options.cookie,
+            tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
+            tokenServiceUrl = options.potUrl,
+        )
+    }
+    println("PROBE_PREWARM=${if (prewarmOk) "PASS" else "FAIL"} elapsedMs=${(System.nanoTime() - prewarmStartedAt) / 1_000_000}")
     val startedAt = System.nanoTime()
     val result = runBlocking {
         probe.run(
@@ -42,6 +52,7 @@ public fun main(args: Array<String>) {
             candidateVideoIds = options.video?.let(::listOf) ?: DEFAULT_CANDIDATES,
             sampleCount = options.sampleCount,
             fastPlayback = options.fastPlayback,
+            playbackClientOverrideId = options.clientOverride,
         )
     }
     println("PROBE_TIMING resolveMs=${(System.nanoTime() - startedAt) / 1_000_000} fastPlayback=${options.fastPlayback}")
@@ -58,6 +69,7 @@ public fun main(args: Array<String>) {
                 candidateVideoIds = listOf(repeatVideo),
                 sampleCount = options.sampleCount,
                 fastPlayback = options.fastPlayback,
+                playbackClientOverrideId = options.clientOverride,
             )
         }
         println("PROBE_TIMING repeat=${repeatIndex + 2} video=$repeatVideo resolveMs=${(System.nanoTime() - repeatStartedAt) / 1_000_000} fastPlayback=${options.fastPlayback}")
@@ -94,6 +106,7 @@ private fun parseOptions(args: Array<String>): Options {
     var sampleCount = 1
     var fastPlayback = false
     var repeat = 1
+    var clientOverride: String? = null
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
@@ -102,6 +115,7 @@ private fun parseOptions(args: Array<String>): Options {
             arg.startsWith("--sample-count=") -> sampleCount = arg.substringAfter('=').toInt()
             arg == "--fast" -> fastPlayback = true
             arg.startsWith("--repeat=") -> repeat = arg.substringAfter('=').toInt()
+            arg.startsWith("--client=") -> clientOverride = arg.substringAfter('=').takeIf(String::isNotBlank)
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
@@ -111,7 +125,7 @@ private fun parseOptions(args: Array<String>): Options {
     require(sampleCount in 1..30) { "--sample-count 必须介于 1 和 30" }
     require(repeat in 1..5) { "--repeat 必须介于 1 和 5" }
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
-    return Options(providers, potUrl, cookie, video, sampleCount, fastPlayback, repeat)
+    return Options(providers, potUrl, cookie, video, sampleCount, fastPlayback, repeat, clientOverride)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")

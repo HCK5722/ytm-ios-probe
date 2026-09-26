@@ -71,7 +71,7 @@ public class YTMProbe {
     ): Boolean {
         if (tokenGroup != "baseline") return false
         return runCatching {
-            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE)
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = true)
         }.isSuccess
     }
 
@@ -86,7 +86,7 @@ public class YTMProbe {
     ): StreamingAudioHandle? {
         val useCachedPlaybackBundle = tokenGroup == "baseline"
         val bundle = if (useCachedPlaybackBundle) {
-            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE)
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
         } else {
             createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = true)
         }
@@ -165,6 +165,7 @@ public class YTMProbe {
         collectFullAudio: Boolean = false,
         forceSabr: Boolean = false,
         fastPlayback: Boolean = false,
+        playbackClientOverrideId: String? = null,
         streamSink: AudioStreamSink? = null,
     ): ProbeResult {
         val logLines = mutableListOf<String>()
@@ -183,7 +184,7 @@ public class YTMProbe {
         }
         val useCachedPlaybackBundle = fastPlayback && tokenGroup == "baseline"
         val bundle = if (useCachedPlaybackBundle) {
-            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger)
+            getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = false)
         } else {
             createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = !fastPlayback)
         }
@@ -250,7 +251,11 @@ public class YTMProbe {
                         // Match Metrolist's playback policy: the fast path must
                         // request a normal Range-capable media URL. SABR is
                         // reserved for the dedicated streaming fallback.
-                        hints = ContentHints(wantVideo = false, sabrFirst = forceSabr)
+                        hints = ContentHints(
+                            wantVideo = false,
+                            playbackClientOverrideId = playbackClientOverrideId,
+                            sabrFirst = forceSabr,
+                        )
                             .withStreamCapabilities(
                                 allowHls = false,
                                 allowSabr = forceSabr,
@@ -433,6 +438,7 @@ public class YTMProbe {
         tokenGroup: String,
         tokenServiceUrl: String,
         logger: InnerTubeLogger,
+        warm: Boolean,
     ): PlaybackBundle = playbackBundleMutex.withLock {
         val key = "${tokenGroup}:${cookie.orEmpty()}"
         cachedPlaybackBundle?.takeIf { cachedPlaybackKey == key }?.let { return@withLock it }
@@ -440,7 +446,7 @@ public class YTMProbe {
             it.innerTube.close()
             it.client.close()
         }
-        val bundle = createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = true)
+        val bundle = createPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = warm)
         cachedPlaybackBundle = bundle
         cachedPlaybackKey = key
         bundle

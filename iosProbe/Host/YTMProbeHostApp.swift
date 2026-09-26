@@ -58,9 +58,11 @@ final class ProbeModel: ObservableObject {
     private var playbackGeneration = 0
     private let kit = YTMKit()
     private let playbackProbe = YTMProbe()
+    private var playbackPrewarmTask: Task<Void, Never>?
     private var configuredAudio = false
     private var preparedDirectCache: [String: PreparedAudio] = [:]
     private var prefetchTask: Task<Void, Never>?
+    private var prefetchingTrackId: String?
 
     init() {
         configureRemoteCommands()
@@ -83,6 +85,8 @@ final class ProbeModel: ObservableObject {
         }
         Task {
             await readEgress()
+        }
+        playbackPrewarmTask = Task {
             do {
                 _ = try await playbackProbe.prewarmPlayback(
                     cookie: nil,
@@ -133,6 +137,7 @@ final class ProbeModel: ObservableObject {
             currentIndex = -1
             state = "歌单已加载：\(items.count) 首"
             verdict = "PROBE_QUEUE=PASS items=\(items.count)"
+            prefetchFirstTrack()
             return true
         } catch {
             state = "歌单加载失败"
@@ -149,7 +154,9 @@ final class ProbeModel: ObservableObject {
             return
         }
         currentTask?.cancel()
-        prefetchTask?.cancel()
+        if prefetchingTrackId != items[index].id {
+            prefetchTask?.cancel()
+        }
         stopCurrentPlayer()
         playbackGeneration &+= 1
         let generation = playbackGeneration
@@ -263,11 +270,28 @@ final class ProbeModel: ObservableObject {
         if let cached = preparedDirectCache.removeValue(forKey: item.id) {
             return cached
         }
+        if prefetchingTrackId == item.id {
+            await prefetchTask?.value
+            prefetchingTrackId = nil
+            if let cached = preparedDirectCache.removeValue(forKey: item.id) {
+                return cached
+            }
+        }
         return await fetchAudio(for: item, updateUI: updateUI, allowFallback: true)
     }
 
-    private func fetchAudio(for item: ItemDTO, updateUI: Bool, allowFallback: Bool) async -> PreparedAudio? {
+    private func fetchAudio(for item: ItemDTO, updateUI: Bool, allowFallback: Bool, isPrefetch: Bool = false) async -> PreparedAudio? {
         do {
+            if !isPrefetch, prefetchingTrackId == item.id {
+                await prefetchTask?.value
+                prefetchingTrackId = nil
+                if let cached = preparedDirectCache.removeValue(forKey: item.id) {
+                    return cached
+                }
+            }
+            // Do not let the first user tap race the extractor/cipher prewarm.
+            // Once this task has completed, direct client resolution is normally sub-second.
+            await playbackPrewarmTask?.value
             let result = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
                 videoId: item.id,
@@ -279,6 +303,7 @@ final class ProbeModel: ObservableObject {
                 collectFullAudio: false,
                 forceSabr: false,
                 fastPlayback: true,
+                playbackClientOverrideId: "VISIONOS_0_1",
                 streamSink: nil,
             )
             if let failureStage = result.failureStage {
@@ -363,14 +388,33 @@ final class ProbeModel: ObservableObject {
         }
     }
 
+    private func prefetchFirstTrack() {
+        guard let first = items.first, preparedDirectCache[first.id] == nil else { return }
+        prefetchTask?.cancel()
+        prefetchingTrackId = first.id
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.prefetchingTrackId == first.id { self.prefetchingTrackId = nil }
+            }
+            let prepared = await self.fetchAudio(for: first, updateUI: false, allowFallback: false, isPrefetch: true)
+            guard !Task.isCancelled, let prepared, prepared.directURL != nil else { return }
+            self.preparedDirectCache[first.id] = prepared
+        }
+    }
+
     private func schedulePrefetch(after index: Int, generation: Int) {
         guard let next = nextIndex(after: index), items.indices.contains(next) else { return }
         let nextItem = items[next]
         guard preparedDirectCache[nextItem.id] == nil else { return }
         prefetchTask?.cancel()
+        prefetchingTrackId = nextItem.id
         prefetchTask = Task { [weak self] in
             guard let self else { return }
-            let prepared = await self.fetchAudio(for: nextItem, updateUI: false, allowFallback: false)
+            defer {
+                if self.prefetchingTrackId == nextItem.id { self.prefetchingTrackId = nil }
+            }
+            let prepared = await self.fetchAudio(for: nextItem, updateUI: false, allowFallback: false, isPrefetch: true)
             guard !Task.isCancelled, generation == self.playbackGeneration,
                   let prepared, prepared.directURL != nil else { return }
             self.preparedDirectCache[nextItem.id] = prepared
