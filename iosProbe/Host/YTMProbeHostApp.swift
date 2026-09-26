@@ -380,9 +380,11 @@ final class ProbeModel: ObservableObject {
                 return
             }
             let sample = Array(self.items.prefix(30))
-            var passed = 0
+            var resolved = 0
+            var prefixReadable = 0
             var profiles: [String: Int] = [:]
             var failures: [String: Int] = [:]
+            var prefixFailures: [String: Int] = [:]
             var failureTracks: [String] = []
             for (offset, item) in sample.enumerated() {
                 var result: ProbeResult?
@@ -401,13 +403,19 @@ final class ProbeModel: ObservableObject {
                         fastPlayback: false,
                         streamSink: nil,
                     )
-                    if result?.streamOk == true { break }
+                    if result?.streamOk == true, result?.prefixReadable == true { break }
                     if attempt < 3 { try? await Task.sleep(for: .milliseconds(350)) }
                 }
                 if let result, result.streamOk {
-                    passed += 1
+                    resolved += 1
                     let profile = result.audioProfile ?? "unknown"
                     profiles[profile, default: 0] += 1
+                    if result.prefixReadable {
+                        prefixReadable += 1
+                    } else {
+                        let reason = result.prefixFailure ?? "prefix_unreadable"
+                        prefixFailures[reason, default: 0] += 1
+                    }
                 } else {
                     let reason = result?.streamFailure ?? "request_or_exception"
                     failures[reason, default: 0] += 1
@@ -418,8 +426,9 @@ final class ProbeModel: ObservableObject {
             }
             let profileText = profiles.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
             let failureText = failures.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
+            let prefixFailureText = prefixFailures.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
             let trackText = failureTracks.isEmpty ? "无" : failureTracks.joined(separator: "\n")
-            self.coverageText = "覆盖率：\(passed)/\(sample.count)\nprofile：\(profileText.isEmpty ? "无" : profileText)\n失败：\(failureText.isEmpty ? "无" : failureText)\n失败曲目：\n\(trackText)"
+            self.coverageText = "取流解析：\(resolved)/\(sample.count)\n前缀可读：\(prefixReadable)/\(sample.count)\nprofile：\(profileText.isEmpty ? "无" : profileText)\n解析失败：\(failureText.isEmpty ? "无" : failureText)\n前缀失败：\(prefixFailureText.isEmpty ? "无" : prefixFailureText)\n失败曲目：\n\(trackText)"
         }
     }
 
