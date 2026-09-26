@@ -227,8 +227,15 @@ public class YTMProbe {
                 try {
                     val candidateStream = extractor.extract(
                         videoId = candidate,
-                        // SABR preference is not evidence that the song is age-restricted.
-                        hints = ContentHints(wantVideo = false, sabrFirst = forceSabr),
+                        // Match Metrolist's playback policy: the fast path must
+                        // request a normal Range-capable media URL. SABR is
+                        // reserved for the dedicated streaming fallback.
+                        hints = ContentHints(wantVideo = false, sabrFirst = forceSabr)
+                            .withStreamCapabilities(
+                                allowHls = false,
+                                allowSabr = forceSabr,
+                                allowBoundedRange = true,
+                            ),
                         // AVPlayer on iOS cannot consume the WebM/Opus stream selected by AUTO.
                         // Prefer the MP4/AAC representation for the playback-chain probe.
                         audioQuality = AudioQuality.MP4,

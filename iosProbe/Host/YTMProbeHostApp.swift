@@ -37,6 +37,7 @@ final class ProbeModel: ObservableObject {
     private struct PreparedAudio {
         let data: Data?
         let directURL: URL?
+        let headers: [String: String]
         let streamState: StreamingAudioState?
         let mimeType: String
         let client: String
@@ -171,7 +172,11 @@ final class ProbeModel: ObservableObject {
             guard generation == playbackGeneration, !Task.isCancelled else { return }
             let item: AVPlayerItem
             if let directURL = prepared.directURL {
-                item = AVPlayerItem(url: directURL)
+                let assetOptions: [String: Any]? = prepared.headers.isEmpty
+                    ? nil
+                    : [AVURLAssetHTTPHeaderFieldsKey: prepared.headers]
+                let asset = AVURLAsset(url: directURL, options: assetOptions)
+                item = AVPlayerItem(asset: asset)
                 transport = "DIRECT / \(prepared.mimeType)"
             } else if let streamState = prepared.streamState {
                 let server = LoopbackRangeServer(streamState: streamState, mimeType: prepared.mimeType)
@@ -274,6 +279,7 @@ final class ProbeModel: ObservableObject {
                 return PreparedAudio(
                     data: nil,
                     directURL: directURL,
+                    headers: result.audioHeaders,
                     streamState: nil,
                     mimeType: result.audioMimeType ?? "audio/mp4",
                     client: result.audioClient ?? "unknown",
@@ -319,6 +325,7 @@ final class ProbeModel: ObservableObject {
             return PreparedAudio(
                 data: nil,
                 directURL: nil,
+                headers: [:],
                 streamState: streamState,
                 mimeType: snapshot.mimeType,
                 client: handle.client,
@@ -365,6 +372,7 @@ final class ProbeModel: ObservableObject {
             return PreparedAudio(
                 data: data,
                 directURL: nil,
+                headers: [:],
                 streamState: nil,
                 mimeType: fallback.audioMimeType ?? "audio/mp4",
                 client: fallback.audioClient ?? "unknown",
