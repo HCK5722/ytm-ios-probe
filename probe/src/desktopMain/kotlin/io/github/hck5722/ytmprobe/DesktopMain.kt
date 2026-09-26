@@ -16,6 +16,7 @@ private data class Options(
     val clientOverride: String?,
     val noPrewarm: Boolean,
     val directPlayer: Boolean,
+    val verifyPrefix: Boolean,
 )
 
 public fun main(args: Array<String>) {
@@ -60,6 +61,7 @@ public fun main(args: Array<String>) {
             sampleCount = options.sampleCount,
             fastPlayback = options.fastPlayback,
             directPlayerFastPath = options.directPlayer,
+            verifyAudioPrefix = options.verifyPrefix,
             playbackClientOverrideId = options.clientOverride,
         )
     }
@@ -78,6 +80,7 @@ public fun main(args: Array<String>) {
                 sampleCount = options.sampleCount,
                 fastPlayback = options.fastPlayback,
                 directPlayerFastPath = options.directPlayer,
+                verifyAudioPrefix = options.verifyPrefix,
                 playbackClientOverrideId = options.clientOverride,
             )
         }
@@ -101,9 +104,10 @@ public fun main(args: Array<String>) {
     result.streamRunSummaries.forEach { println("PROBE_DIAG_RUN ${safe(it)}") }
     result.diagnostic.lineSequence()
         .filter {
-            it.startsWith("PROBE_TOKEN ") ||
+                it.startsWith("PROBE_TOKEN ") ||
                 it.startsWith("PROBE_TOKEN_ATTEMPT ") ||
-                it.startsWith("PROBE_TIMING_DIRECT_PLAYER ")
+                it.startsWith("PROBE_TIMING_DIRECT_PLAYER ") ||
+                it.startsWith("PROBE_TIMING_CANDIDATE ")
         }
         .map(::safe)
         .forEach(::println)
@@ -123,6 +127,7 @@ private fun parseOptions(args: Array<String>): Options {
     var clientOverride: String? = null
     var noPrewarm = false
     var directPlayer = false
+    var verifyPrefix = false
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
@@ -135,6 +140,7 @@ private fun parseOptions(args: Array<String>): Options {
             arg.startsWith("--client=") -> clientOverride = arg.substringAfter('=').takeIf(String::isNotBlank)
             arg == "--cold" -> noPrewarm = true
             arg == "--direct-player" -> directPlayer = true
+            arg == "--verify-prefix" -> verifyPrefix = true
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
@@ -146,7 +152,7 @@ private fun parseOptions(args: Array<String>): Options {
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
     require(video == null || videos.isEmpty()) { "--video 与 --videos 不能同时使用" }
     require(videos.size <= 30) { "--videos 最多支持 30 个 ID" }
-    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer)
+    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer, verifyPrefix)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")

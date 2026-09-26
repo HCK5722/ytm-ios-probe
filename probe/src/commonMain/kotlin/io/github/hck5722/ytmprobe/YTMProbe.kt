@@ -189,6 +189,7 @@ public class YTMProbe {
         forceSabr: Boolean = false,
         fastPlayback: Boolean = false,
         directPlayerFastPath: Boolean = false,
+        verifyAudioPrefix: Boolean = false,
         playbackClientOverrideId: String? = null,
         streamSink: AudioStreamSink? = null,
     ): ProbeResult {
@@ -267,6 +268,7 @@ public class YTMProbe {
             var selectedPrefixReadable = false
             var selectedPrefixFailure: String? = null
             for (candidate in streamCandidates) {
+                val candidateStartedAt = TimeSource.Monotonic.markNow()
                 streamAttempts += 1
                 stage = "stream_extract:$candidate"
                 try {
@@ -313,7 +315,7 @@ public class YTMProbe {
                     } else {
                         var pulledBytes = 0L
                         var prefixFailure: String? = null
-                        if (streamSink == null && !fastPlayback && !directPlayerFastPath) {
+                        if (streamSink == null && (!fastPlayback || verifyAudioPrefix)) {
                             try {
                                 pulledBytes = pullAudioPrefix(client, candidateStream)
                             } catch (error: Throwable) {
@@ -330,6 +332,7 @@ public class YTMProbe {
                             stream = candidateStream
                             selectedStreamBytesPulled = pulledBytes
                         }
+                        logLines += "PROBE_TIMING_CANDIDATE video=$candidate elapsedMs=${candidateStartedAt.elapsedNow().inWholeMilliseconds} bytesPulled=$pulledBytes prefixFailure=${prefixFailure ?: "none"}"
                     }
                 } catch (error: Throwable) {
                     val resolveError = error as? StreamResolveException

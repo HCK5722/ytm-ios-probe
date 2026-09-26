@@ -323,6 +323,7 @@ final class ProbeModel: ObservableObject {
                 forceSabr: false,
                 fastPlayback: true,
                 directPlayerFastPath: true,
+                verifyAudioPrefix: false,
                 playbackClientOverrideId: "VISIONOS_0_1",
                 streamSink: nil,
             )
@@ -472,6 +473,7 @@ final class ProbeModel: ObservableObject {
                 forceSabr: true,
                 fastPlayback: false,
                 directPlayerFastPath: false,
+                verifyAudioPrefix: false,
                 playbackClientOverrideId: nil,
                 streamSink: nil,
             )
@@ -573,6 +575,7 @@ final class ProbeModel: ObservableObject {
                         forceSabr: true,
                         fastPlayback: false,
                         directPlayerFastPath: false,
+                        verifyAudioPrefix: false,
                         playbackClientOverrideId: nil,
                         streamSink: nil,
                     )
