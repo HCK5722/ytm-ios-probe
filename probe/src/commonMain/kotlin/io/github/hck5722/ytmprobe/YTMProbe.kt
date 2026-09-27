@@ -195,7 +195,11 @@ public class YTMProbe {
     ): ProbeResult {
         val logLines = mutableListOf<String>()
         var stage = "init"
+        var captureExtractorDiagnostics = false
         val logger = InnerTubeLogger { event: InnerTubeLogEvent ->
+            if (captureExtractorDiagnostics) {
+                formatExtractorDiagnostic(event)?.let(logLines::add)
+            }
             if (tokenGroup == "2a" && event.message in TOKEN_DIAGNOSTIC_EVENTS) {
                 val details = event.details.orEmpty()
                 val clientName = details["client"] ?: "none"
@@ -207,7 +211,10 @@ public class YTMProbe {
                     " tokenPresent=" + tokenPresent
             }
         }
-        val useCachedPlaybackBundle = fastPlayback && tokenGroup == "baseline"
+        // A cached bundle may have been created during startup with NONE logger.
+        // Use a fresh bundle for the diagnostic direct pass so extractor events
+        // are actually observable; normal SABR/non-diagnostic paths keep reuse.
+        val useCachedPlaybackBundle = fastPlayback && tokenGroup == "baseline" && !directPlayerFastPath
         val bundle = if (useCachedPlaybackBundle) {
             getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = false)
         } else {
@@ -283,12 +290,25 @@ public class YTMProbe {
                             allowSabr = false,
                             allowBoundedRange = false,
                         )
-                        val formalDirect = extractor.extract(
-                            videoId = candidate,
-                            hints = directHints,
-                            audioQuality = AudioQuality.MP4,
-                        )
+                        captureExtractorDiagnostics = true
+                        val formalDirect = try {
+                            extractor.extract(
+                                videoId = candidate,
+                                hints = directHints,
+                                audioQuality = AudioQuality.MP4,
+                            )
+                        } finally {
+                            captureExtractorDiagnostics = false
+                        }
+                        val extractorTail = logLines
+                            .filter { it.startsWith("PROBE_EXTRACTOR ") }
+                            .takeLast(MAX_EXTRACTOR_DIAGNOSTIC_LINES)
+                            .joinToString(" || ")
                         logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} formal=${formalDirect != null} client=${formalDirect?.clientName ?: "none"} profile=${formalDirect?.profileId ?: "none"} mime=${formalDirect?.mimeType ?: "none"} sabr=${formalDirect?.sabrBootstrap != null}"
+                        if (formalDirect == null && extractorTail.isNotBlank()) {
+                            logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate $extractorTail"
+                            lastStreamDiagnostics = extractorTail
+                        }
                         formalDirect
                     } else {
                         extractor.extract(
@@ -397,7 +417,10 @@ public class YTMProbe {
             if (streamingPath != null) streamSink?.onStreamCompleted()
 
             val directFailure = if (directPlayerFastPath && stream == null) {
-                logLines.filter { it.startsWith("PROBE_TIMING_DIRECT_PLAYER ") }
+                logLines.filter {
+                    it.startsWith("PROBE_TIMING_DIRECT_PLAYER ") ||
+                        it.startsWith("PROBE_DIRECT_NULL_DIAGNOSTICS ")
+                }
                     .joinToString(" | ")
                     .ifBlank { "no_direct_client_result" }
             } else null
@@ -566,6 +589,91 @@ public class YTMProbe {
                 "tokenized response unavailable",
                 "playback-ready client response",
             )
+        private const val MAX_EXTRACTOR_DIAGNOSTIC_LINES = 80
+        private val EXTRACTOR_DIAGNOSTIC_EVENTS =
+            setOf(
+                "stream extraction started",
+                "player extraction pass",
+                "player client selection",
+                "player response batch started",
+                "client response unavailable",
+                "client response deferred",
+                "client response requires processing",
+                "playback-ready client response",
+                "player response selected",
+                "player response batch completed",
+                "no playable clients",
+                "player responses received",
+                "response missing streaming data",
+                "SABR client skipped by request",
+                "SABR response missing audio format",
+                "SABR endpoint rejected",
+                "stream selected",
+                "cipher processing completed",
+                "audio candidate unavailable",
+                "selected audio candidate unavailable",
+                "playable clients produced no usable audio",
+                "retrying after unusable response",
+                "player config prewarm failed",
+                "player config fetch failed",
+                "Remote player configs HTTP",
+                "Remote player config refresh failed",
+                "watch page cache unusable",
+                "signed-out watch config fallback",
+                "authenticated watch config unavailable",
+                "embedded config unavailable",
+            )
+        private val SAFE_EXTRACTOR_DETAIL_KEYS =
+            setOf(
+                "client",
+                "profile",
+                "profilePresent",
+                "candidateCount",
+                "rejectedCount",
+                "excludedCount",
+                "wantVideo",
+                "directAudioOnly",
+                "cipherOnly",
+                "tokenUnavailable",
+                "requestFailure",
+                "failurePresent",
+                "tokenPresent",
+                "transport",
+                "count",
+                "resultCount",
+                "elapsedMs",
+                "formatCount",
+                "totalCount",
+                "urlCount",
+                "directCount",
+                "boundedRange",
+                "direct",
+                "signatureTimestamp",
+                "visitorDataPresent",
+                "exceptionType",
+                "authenticated",
+                "authenticatedWatchPage",
+                "fallback",
+                "playable",
+            )
+
+        private fun formatExtractorDiagnostic(event: InnerTubeLogEvent): String? {
+            if (event.message !in EXTRACTOR_DIAGNOSTIC_EVENTS &&
+                !event.message.startsWith("Remote player configs HTTP")
+            ) return null
+            val details = event.details
+                .filterKeys { it in SAFE_EXTRACTOR_DETAIL_KEYS }
+                .entries
+                .sortedBy { it.key }
+                .joinToString(" ") { (key, value) ->
+                    val safeValue = value.replace(Regex("[^A-Za-z0-9_.:+/-]"), "_").take(96)
+                    "$key=$safeValue"
+                }
+            val tag = event.tag.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(64)
+            val message = event.message.replace(Regex("[^A-Za-z0-9_. -]"), "_").replace(' ', '_').take(96)
+            return "PROBE_EXTRACTOR level=${event.level.name} tag=$tag event=$message" +
+                if (details.isBlank()) "" else " $details"
+        }
     }
 }
 
