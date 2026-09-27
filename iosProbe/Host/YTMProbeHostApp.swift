@@ -337,6 +337,90 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
+            // SABR is the verified iOS path for the current YouTube responses.
+            // Start it before probing ordinary direct clients: the direct matrix
+            // costs several seconds and commonly returns PLAYABLE metadata with
+            // no URL on iOS. Direct remains a fallback below for profiles that
+            // still expose a usable googlevideo URL.
+            let streamState = StreamingAudioState()
+            let sink = StreamingAudioSink(state: streamState)
+            let handle = try await playbackProbe.startStreaming(
+                videoId: item.id,
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                playbackClientOverrideId: "VISIONOS_SABR",
+                streamSink: sink,
+            )
+            if handle == nil {
+                let fallback = await fetchDirectFallback(for: item, updateUI: updateUI)
+                let completedFallback: PreparedAudio?
+                if let fallback {
+                    completedFallback = fallback
+                } else {
+                    completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                }
+                if fallback == nil, updateUI {
+                    state = "取流失败：\(item.title)"
+                    failureDetail = "SABR streaming 初始化失败；direct fallback 也没有可用 URL"
+                    verdict = "PROBE_PLAY=FAIL reason=direct_and_sabr_unavailable"
+                }
+                return completedFallback
+            }
+            guard let handle else { return nil }
+            streamingHandle = handle
+            let deadline = Date().addingTimeInterval(12)
+            while Date() < deadline {
+                let snapshot = streamState.snapshot()
+                // AVPlayer only needs the init atom and the first media bytes
+                // to begin decoding. Waiting for 256 KiB made startup depend
+                // on a large SABR download and was the dominant cold-start
+                // delay on iOS.
+                // The MP4 init atom plus the first AAC fragment is normally well
+                // below 32 KiB. Starting AVPlayer as soon as 8 KiB is available
+                // avoids waiting for an unnecessarily large prefix.
+                if snapshot.available >= 8 * 1024 || snapshot.completed { break }
+                if Task.isCancelled { handle.close(); return nil }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let snapshot = streamState.snapshot()
+            guard snapshot.available > 0, !snapshot.path.isEmpty else {
+                handle.close()
+                if updateUI {
+                    state = "SABR 首段不可用：\(item.title)"
+                    failureDetail = [snapshot.failure ?? "no_initial_media_bytes"]
+                        .compactMap { $0 }
+                        .joined(separator: "\n")
+                    verdict = "PROBE_PLAY=FAIL reason=sabr_initial_segment"
+                }
+                let fallback = await fetchDirectFallback(for: item, updateUI: updateUI)
+                if let fallback { return fallback }
+                return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+            }
+            return PreparedAudio(
+                data: nil,
+                directURL: nil,
+                headers: [:],
+                streamState: streamState,
+                mimeType: snapshot.mimeType,
+                client: handle.client,
+                profile: handle.profile,
+                bytes: handle.expectedBytes,
+                expiresAt: nil,
+            )
+        } catch {
+            if error is CancellationError || Task.isCancelled { return nil }
+            if updateUI {
+                state = "取流异常：\(item.title)"
+                failureDetail = (error as NSError).localizedDescription
+                verdict = "PROBE_PLAY=FAIL reason=stream_exception"
+            }
+            return nil
+        }
+    }
+
+    private func fetchDirectFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
+        do {
             let directStartedAt = Date()
             let direct = try await playbackProbe.run(
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
@@ -369,109 +453,17 @@ final class ProbeModel: ObservableObject {
                 let diagnostic = direct.streamDiagnostics
                     .replacingOccurrences(of: "cookie", with: "credential", options: .caseInsensitive)
                     .prefix(6000)
-                failureDetail = "directAttemptMs=\(directElapsedMs)\nclient=\(direct.audioClient ?? "none") profile=\(direct.audioProfile ?? "none")\nreason=\(direct.failureStage ?? "no_direct_url") type=\(direct.failureType ?? "DirectAudioUnavailable")\n\(diagnostic)"
+                failureDetail = "directFallbackMs=\(directElapsedMs)\nclient=\(direct.audioClient ?? "none") profile=\(direct.audioProfile ?? "none")\nreason=\(direct.failureStage ?? "no_direct_url") type=\(direct.failureType ?? "DirectAudioUnavailable")\n\(diagnostic)"
             }
-
-            let streamState = StreamingAudioState()
-            let sink = StreamingAudioSink(state: streamState)
-            let handle = try await playbackProbe.startStreaming(
-                videoId: item.id,
-                cookie: nil,
-                tokenGroup: "baseline",
-                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                playbackClientOverrideId: "VISIONOS_SABR",
-                streamSink: sink,
-            )
-            if handle == nil {
-                let fallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
-                if fallback == nil, updateUI {
-                    state = "取流失败：\(item.title)"
-                    failureDetail = "SABR streaming 初始化失败"
-                    verdict = "PROBE_PLAY=FAIL reason=direct_and_sabr_unavailable"
-                }
-                return fallback
-            }
-            guard let handle else { return nil }
-            streamingHandle = handle
-            let deadline = Date().addingTimeInterval(12)
-            while Date() < deadline {
-                let snapshot = streamState.snapshot()
-                // AVPlayer only needs the init atom and the first media bytes
-                // to begin decoding. Waiting for 256 KiB made startup depend
-                // on a large SABR download and was the dominant cold-start
-                // delay on iOS.
-                if snapshot.available >= 32 * 1024 || snapshot.completed { break }
-                if Task.isCancelled { handle.close(); return nil }
-                try await Task.sleep(for: .milliseconds(50))
-            }
-            let snapshot = streamState.snapshot()
-            guard snapshot.available > 0, !snapshot.path.isEmpty else {
-                handle.close()
-                if updateUI {
-                    state = "SABR 首段不可用：\(item.title)"
-                    failureDetail = [snapshot.failure ?? "no_initial_media_bytes"]
-                        .compactMap { $0 }
-                        .joined(separator: "\n")
-                    verdict = "PROBE_PLAY=FAIL reason=sabr_initial_segment"
-                }
-                return nil
-            }
-            return PreparedAudio(
-                data: nil,
-                directURL: nil,
-                headers: [:],
-                streamState: streamState,
-                mimeType: snapshot.mimeType,
-                client: handle.client,
-                profile: handle.profile,
-                bytes: handle.expectedBytes,
-                expiresAt: nil,
-            )
+            return nil
+        } catch is CancellationError {
+            return nil
         } catch {
-            if error is CancellationError || Task.isCancelled { return nil }
             if updateUI {
-                state = "取流异常：\(item.title)"
-                failureDetail = (error as NSError).localizedDescription
-                verdict = "PROBE_PLAY=FAIL reason=stream_exception"
+                failureDetail = "directFallbackError=\((error as NSError).localizedDescription)"
             }
             return nil
         }
-    }
-
-    private func directPreparedAudio(from result: ProbeResult) -> PreparedAudio? {
-        guard result.streamOk, !result.isSabr,
-              let rawURL = result.audioUrl,
-              let components = URLComponents(string: rawURL),
-              components.scheme?.lowercased() == "https",
-              let host = components.host?.lowercased(),
-              host == "googlevideo.com" || host.hasSuffix(".googlevideo.com"),
-              let url = components.url,
-              result.audioMimeType?.lowercased().hasPrefix("audio/") == true else {
-            return nil
-        }
-        let expiresAt = result.audioExpiresAtMs.map {
-            Date(timeIntervalSince1970: $0.doubleValue / 1000.0)
-        }
-        if let expiresAt, expiresAt.timeIntervalSinceNow <= 15 { return nil }
-        return PreparedAudio(
-            data: nil,
-            directURL: url,
-            headers: result.audioHeaders,
-            streamState: nil,
-            mimeType: result.audioMimeType ?? "audio/mp4",
-            client: result.audioClient ?? "unknown",
-            profile: result.audioProfile ?? "unknown",
-            bytes: result.audioExpectedBytes?.int64Value ?? 0,
-            expiresAt: expiresAt,
-        )
-    }
-
-    private func schedulePrefetch(after _: Int, generation _: Int) {
-        prefetchTask?.cancel()
-        prefetchTask = nil
-        prefetchingTrackId = nil
-        backgroundPrefetchTask?.cancel()
-        backgroundPrefetchTask = nil
     }
 
     private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
@@ -522,6 +514,42 @@ final class ProbeModel: ObservableObject {
             }
             return nil
         }
+    }
+
+    private func directPreparedAudio(from result: ProbeResult) -> PreparedAudio? {
+        guard result.streamOk, !result.isSabr,
+              let rawURL = result.audioUrl,
+              let components = URLComponents(string: rawURL),
+              components.scheme?.lowercased() == "https",
+              let host = components.host?.lowercased(),
+              host == "googlevideo.com" || host.hasSuffix(".googlevideo.com"),
+              let url = components.url,
+              result.audioMimeType?.lowercased().hasPrefix("audio/") == true else {
+            return nil
+        }
+        let expiresAt = result.audioExpiresAtMs.map {
+            Date(timeIntervalSince1970: $0.doubleValue / 1000.0)
+        }
+        if let expiresAt, expiresAt.timeIntervalSinceNow <= 15 { return nil }
+        return PreparedAudio(
+            data: nil,
+            directURL: url,
+            headers: result.audioHeaders,
+            streamState: nil,
+            mimeType: result.audioMimeType ?? "audio/mp4",
+            client: result.audioClient ?? "unknown",
+            profile: result.audioProfile ?? "unknown",
+            bytes: result.audioExpectedBytes?.int64Value ?? 0,
+            expiresAt: expiresAt,
+        )
+    }
+
+    private func schedulePrefetch(after _: Int, generation _: Int) {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchingTrackId = nil
+        backgroundPrefetchTask?.cancel()
+        backgroundPrefetchTask = nil
     }
 
     private func nextIndex(after index: Int) -> Int? {
