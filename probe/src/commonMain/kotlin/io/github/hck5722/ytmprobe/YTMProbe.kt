@@ -300,6 +300,7 @@ public class YTMProbe {
                         )
                         captureExtractorDiagnostics = true
                         var directException: String? = null
+                        var rawDirect: DirectPlayerExtraction? = null
                         val formalDirect = try {
                             extractor.extract(
                                 videoId = candidate,
@@ -324,10 +325,8 @@ public class YTMProbe {
                             .takeLast(MAX_EXTRACTOR_DIAGNOSTIC_LINES)
                             .joinToString(" || ")
                         val rawPlayerDiagnostic = if (formalDirect == null && includeRawDirectDiagnostics) {
-                            runCatching { extractDirectPlayerAudio(innerTube, candidate).diagnostic }
-                                .getOrElse { error ->
-                                    "rawPlayerException=${error::class.simpleName}:${sanitizeFailureMessage(error.message).orEmpty()}"
-                                }
+                            rawDirect = runCatching { extractDirectPlayerAudio(innerTube, candidate) }.getOrNull()
+                            rawDirect?.diagnostic ?: "rawPlayerException=direct_player_probe_failed"
                                 .replace(Regex("[^A-Za-z0-9_.:=;,+/-]"), "_")
                                 .take(1800)
                         } else if (formalDirect == null) {
@@ -335,15 +334,16 @@ public class YTMProbe {
                         } else {
                             "none"
                         }
-                        logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} formal=${formalDirect != null} client=${formalDirect?.clientName ?: "none"} profile=${formalDirect?.profileId ?: "none"} mime=${formalDirect?.mimeType ?: "none"} sabr=${formalDirect?.sabrBootstrap != null}"
-                        if (formalDirect == null && extractorTail.isNotBlank()) {
+                        val directStream = formalDirect ?: rawDirect?.stream
+                        logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} formal=${formalDirect != null} raw=${rawDirect?.stream != null} client=${directStream?.clientName ?: "none"} profile=${directStream?.profileId ?: "none"} mime=${directStream?.mimeType ?: "none"} sabr=${directStream?.sabrBootstrap != null}"
+                        if (formalDirect == null && (extractorTail.isNotBlank() || rawPlayerDiagnostic != "none")) {
                             logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate raw=$rawPlayerDiagnostic $extractorTail"
                             lastStreamDiagnostics = "raw=$rawPlayerDiagnostic $extractorTail"
                         } else if (formalDirect == null && directException != null) {
                             logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate raw=$rawPlayerDiagnostic"
                             lastStreamDiagnostics = "raw=$rawPlayerDiagnostic directException=$directException"
                         }
-                        formalDirect
+                        directStream
                     } else {
                         extractor.extract(
                             videoId = candidate,
@@ -849,7 +849,7 @@ private suspend fun extractDirectPlayerAudioForClient(
     val stream = com.metrolist.innertubex.extraction.ExtractedStream(
         videoId = videoId,
         audioUrl = mediaUrl,
-        headers = emptyMap(),
+        headers = directMediaHeaders(client),
         loudnessDb = format.loudnessDb,
         expiresAt = expiresAt,
         contentLengthBytes = format.contentLength,
@@ -864,6 +864,18 @@ private suspend fun extractDirectPlayerAudioForClient(
         rangeChunkSizeBytes = 1_048_576L,
     )
     return DirectPlayerExtraction(stream, "client=${client.clientName} http=${response.status.value} playability=PLAYABLE audio=${audioFormats.size} urls=${urlFormats.size} unsigned=${unsignedFormats.size} itag=${format.itag} result=PASS")
+}
+
+private fun directMediaHeaders(client: YouTubeClient): Map<String, String> = buildMap {
+    put("User-Agent", client.userAgent)
+    put("Accept", "*/*")
+    when (client.clientName) {
+        "WEB_REMIX" -> {
+            put("Origin", "https://music.youtube.com")
+            put("Referer", "https://music.youtube.com/")
+        }
+        "WEB_EMBEDDED_PLAYER" -> put("Referer", "https://www.youtube.com/")
+    }
 }
 
 private fun isTrustedDirectAudioUrl(value: String): Boolean =

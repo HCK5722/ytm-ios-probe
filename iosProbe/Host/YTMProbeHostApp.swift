@@ -358,7 +358,10 @@ final class ProbeModel: ObservableObject {
                 return prepared
             }
             if updateUI {
-                failureDetail = "directAttemptMs=\(directElapsedMs)\nclient=\(direct.audioClient ?? "none") profile=\(direct.audioProfile ?? "none")\nreason=\(direct.failureStage ?? "no_direct_url") type=\(direct.failureType ?? "DirectAudioUnavailable")"
+                let diagnostic = direct.streamDiagnostics
+                    .replacingOccurrences(of: "cookie", with: "credential", options: .caseInsensitive)
+                    .prefix(6000)
+                failureDetail = "directAttemptMs=\(directElapsedMs)\nclient=\(direct.audioClient ?? "none") profile=\(direct.audioProfile ?? "none")\nreason=\(direct.failureStage ?? "no_direct_url") type=\(direct.failureType ?? "DirectAudioUnavailable")\n\(diagnostic)"
             }
 
             let streamState = StreamingAudioState()
