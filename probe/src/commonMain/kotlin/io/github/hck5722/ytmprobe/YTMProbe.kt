@@ -315,12 +315,23 @@ public class YTMProbe {
                             .filter { it.startsWith("PROBE_EXTRACTOR ") }
                             .takeLast(MAX_EXTRACTOR_DIAGNOSTIC_LINES)
                             .joinToString(" || ")
+                        val rawPlayerDiagnostic = if (formalDirect == null) {
+                            runCatching { extractDirectPlayerAudio(innerTube, candidate).diagnostic }
+                                .getOrElse { error ->
+                                    "rawPlayerException=${error::class.simpleName}:${sanitizeFailureMessage(error.message).orEmpty()}"
+                                }
+                                .replace(Regex("[^A-Za-z0-9_.:=;,+/-]"), "_")
+                                .take(1800)
+                        } else {
+                            "none"
+                        }
                         logLines += "PROBE_TIMING_DIRECT_PLAYER video=$candidate elapsedMs=${directStartedAt.elapsedNow().inWholeMilliseconds} formal=${formalDirect != null} client=${formalDirect?.clientName ?: "none"} profile=${formalDirect?.profileId ?: "none"} mime=${formalDirect?.mimeType ?: "none"} sabr=${formalDirect?.sabrBootstrap != null}"
                         if (formalDirect == null && extractorTail.isNotBlank()) {
-                            logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate $extractorTail"
-                            lastStreamDiagnostics = extractorTail
+                            logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate raw=$rawPlayerDiagnostic $extractorTail"
+                            lastStreamDiagnostics = "raw=$rawPlayerDiagnostic $extractorTail"
                         } else if (formalDirect == null && directException != null) {
-                            lastStreamDiagnostics = "directException=$directException"
+                            logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate raw=$rawPlayerDiagnostic"
+                            lastStreamDiagnostics = "raw=$rawPlayerDiagnostic directException=$directException"
                         }
                         formalDirect
                     } else {
