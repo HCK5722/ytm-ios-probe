@@ -60,6 +60,8 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 public class YTMProbe {
+    public var includeRawDirectDiagnostics: Boolean = true
+
     private data class PlaybackBundle(
         val client: HttpClient,
         val innerTube: InnerTube,
@@ -321,13 +323,15 @@ public class YTMProbe {
                             .filter { it.startsWith("PROBE_EXTRACTOR ") }
                             .takeLast(MAX_EXTRACTOR_DIAGNOSTIC_LINES)
                             .joinToString(" || ")
-                        val rawPlayerDiagnostic = if (formalDirect == null) {
+                        val rawPlayerDiagnostic = if (formalDirect == null && includeRawDirectDiagnostics) {
                             runCatching { extractDirectPlayerAudio(innerTube, candidate).diagnostic }
                                 .getOrElse { error ->
                                     "rawPlayerException=${error::class.simpleName}:${sanitizeFailureMessage(error.message).orEmpty()}"
                                 }
                                 .replace(Regex("[^A-Za-z0-9_.:=;,+/-]"), "_")
                                 .take(1800)
+                        } else if (formalDirect == null) {
+                            "skipped"
                         } else {
                             "none"
                         }

@@ -329,6 +329,38 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
+            let directStartedAt = Date()
+            let direct = try await playbackProbe.run(
+                playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+                videoId: item.id,
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                candidateVideoIds: [item.id],
+                sampleCount: 1,
+                collectFullAudio: false,
+                forceSabr: false,
+                fastPlayback: true,
+                directPlayerFastPath: true,
+                verifyAudioPrefix: false,
+                playbackClientOverrideId: nil,
+                streamSink: nil,
+            )
+            let directElapsedMs = Int(Date().timeIntervalSince(directStartedAt) * 1000)
+            if let prepared = directPreparedAudio(from: direct) {
+                if updateUI {
+                    state = "普通直链已解析：\(item.title)"
+                    client = prepared.client
+                    profile = prepared.profile
+                    transport = "DIRECT / \(prepared.mimeType)"
+                    bytes = "\(prepared.bytes)"
+                }
+                return prepared
+            }
+            if updateUI {
+                failureDetail = "directAttemptMs=\(directElapsedMs)\nclient=\(direct.audioClient ?? "none") profile=\(direct.audioProfile ?? "none")\nreason=\(direct.failureStage ?? "no_direct_url") type=\(direct.failureType ?? "DirectAudioUnavailable")"
+            }
+
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             let handle = try await playbackProbe.startStreaming(
@@ -393,6 +425,34 @@ final class ProbeModel: ObservableObject {
             }
             return nil
         }
+    }
+
+    private func directPreparedAudio(from result: ProbeResult) -> PreparedAudio? {
+        guard result.streamOk, !result.isSabr,
+              let rawURL = result.audioUrl,
+              let components = URLComponents(string: rawURL),
+              components.scheme?.lowercased() == "https",
+              let host = components.host?.lowercased(),
+              host == "googlevideo.com" || host.hasSuffix(".googlevideo.com"),
+              let url = components.url,
+              result.audioMimeType?.lowercased().hasPrefix("audio/") == true else {
+            return nil
+        }
+        let expiresAt = result.audioExpiresAtMs.map {
+            Date(timeIntervalSince1970: $0.doubleValue / 1000.0)
+        }
+        if let expiresAt, expiresAt.timeIntervalSinceNow <= 15 { return nil }
+        return PreparedAudio(
+            data: nil,
+            directURL: url,
+            headers: result.audioHeaders,
+            streamState: nil,
+            mimeType: result.audioMimeType ?? "audio/mp4",
+            client: result.audioClient ?? "unknown",
+            profile: result.audioProfile ?? "unknown",
+            bytes: result.audioExpectedBytes?.int64Value ?? 0,
+            expiresAt: expiresAt,
+        )
     }
 
     private func schedulePrefetch(after _: Int, generation _: Int) {

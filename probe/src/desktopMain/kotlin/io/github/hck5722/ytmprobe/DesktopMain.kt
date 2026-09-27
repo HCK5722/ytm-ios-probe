@@ -18,6 +18,7 @@ private data class Options(
     val directPlayer: Boolean,
     val forceSabr: Boolean,
     val verifyPrefix: Boolean,
+    val directMatrix: List<String>,
 )
 
 public fun main(args: Array<String>) {
@@ -49,6 +50,48 @@ public fun main(args: Array<String>) {
             )
         }
         println("PROBE_PREWARM=${if (prewarmOk) "PASS" else "FAIL"} elapsedMs=${(System.nanoTime() - prewarmStartedAt) / 1_000_000}")
+    }
+    if (options.directMatrix.isNotEmpty()) {
+        probe.includeRawDirectDiagnostics = false
+        val videos = options.videos.ifEmpty { listOf(options.video ?: "DcDbKDAb7go") }
+        println("PROBE_DIRECT_MATRIX_BEGIN videos=${videos.joinToString(",")} clients=${options.directMatrix.joinToString(",")}")
+        for (videoId in videos) {
+            for (clientId in options.directMatrix) {
+                val startedAt = System.nanoTime()
+                val result = runBlocking {
+                    probe.run(
+                        playlistId = "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
+                        videoId = videoId,
+                        cookie = options.cookie,
+                        tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
+                        tokenServiceUrl = options.potUrl,
+                        candidateVideoIds = listOf(videoId),
+                        sampleCount = 1,
+                        fastPlayback = true,
+                        directPlayerFastPath = true,
+                        playbackClientOverrideId = clientId,
+                    )
+                }
+                val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+                println(
+                    "PROBE_DIRECT_MATRIX video=$videoId client=$clientId result=${if (result.streamOk) "PASS" else "FAIL"} " +
+                        "elapsedMs=$elapsedMs resolvedClient=${result.audioClient ?: "none"} " +
+                        "profile=${result.audioProfile ?: "none"} mime=${result.audioMimeType ?: "none"} " +
+                        "sabr=${result.isSabr} failureStage=${result.failureStage ?: "none"} " +
+                        "failureType=${result.failureType ?: "none"}",
+                )
+                result.diagnostic.lineSequence()
+                    .filter {
+                        it.startsWith("PROBE_TOKEN ") ||
+                            it.startsWith("PROBE_TOKEN_ATTEMPT ") ||
+                            it.startsWith("PROBE_EXTRACTOR ")
+                    }
+                    .map(::safe)
+                    .forEach(::println)
+            }
+        }
+        println("PROBE_DIRECT_MATRIX_END")
+        return
     }
     val startedAt = System.nanoTime()
     val result = runBlocking {
@@ -132,6 +175,7 @@ private fun parseOptions(args: Array<String>): Options {
     var directPlayer = false
     var forceSabr = false
     var verifyPrefix = false
+    var directMatrix = emptyList<String>()
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
@@ -146,6 +190,7 @@ private fun parseOptions(args: Array<String>): Options {
             arg == "--direct-player" -> directPlayer = true
             arg == "--sabr" -> forceSabr = true
             arg == "--verify-prefix" -> verifyPrefix = true
+            arg.startsWith("--direct-matrix=") -> directMatrix = arg.substringAfter('=').split(',').map(String::trim).filter(String::isNotBlank)
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
             else -> error("未知参数: $arg")
@@ -157,7 +202,9 @@ private fun parseOptions(args: Array<String>): Options {
     if (providers == "EXTERNAL") require(potUrl.startsWith("http://127.0.0.1:")) { "EXTERNAL 服务必须是本机 127.0.0.1" }
     require(video == null || videos.isEmpty()) { "--video 与 --videos 不能同时使用" }
     require(videos.size <= 30) { "--videos 最多支持 30 个 ID" }
-    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer, forceSabr, verifyPrefix)
+    require(directMatrix.size <= 12) { "--direct-matrix 最多支持 12 个客户端" }
+    require(directMatrix.all { it.matches(Regex("[A-Z0-9_]+")) }) { "--direct-matrix 客户端 ID 格式无效" }
+    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer, forceSabr, verifyPrefix, directMatrix)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")
