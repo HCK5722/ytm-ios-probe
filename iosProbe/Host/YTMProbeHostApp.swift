@@ -103,6 +103,14 @@ final class ProbeModel: ObservableObject {
                     tokenGroup: "baseline",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
                 )
+                // Direct-player extraction needs visitor data as well as the
+                // player config/cipher cache. Populate both while the queue is
+                // idle so the first cold tap starts with a ready session.
+                _ = await playbackProbe.prepareFastPlayback(
+                    cookie: nil,
+                    tokenGroup: "baseline",
+                    tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
+                )
             } catch {
                 // The first track can still resolve lazily if startup prewarm fails.
             }
