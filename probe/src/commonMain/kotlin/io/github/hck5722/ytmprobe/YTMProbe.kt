@@ -291,12 +291,23 @@ public class YTMProbe {
                             allowBoundedRange = false,
                         )
                         captureExtractorDiagnostics = true
+                        var directException: String? = null
                         val formalDirect = try {
                             extractor.extract(
                                 videoId = candidate,
                                 hints = directHints,
                                 audioQuality = AudioQuality.MP4,
                             )
+                        } catch (error: Throwable) {
+                            directException = listOfNotNull(
+                                error::class.simpleName,
+                                sanitizeFailureMessage(error.message),
+                                error.cause?.let { cause ->
+                                    "cause=${cause::class.simpleName}:${sanitizeFailureMessage(cause.message).orEmpty()}"
+                                },
+                            ).joinToString(": ")
+                            logLines += "PROBE_DIRECT_EXCEPTION video=$candidate error=${directException.replace(Regex("[^A-Za-z0-9_.:=-]"), "_").take(320)}"
+                            null
                         } finally {
                             captureExtractorDiagnostics = false
                         }
@@ -308,6 +319,8 @@ public class YTMProbe {
                         if (formalDirect == null && extractorTail.isNotBlank()) {
                             logLines += "PROBE_DIRECT_NULL_DIAGNOSTICS video=$candidate $extractorTail"
                             lastStreamDiagnostics = extractorTail
+                        } else if (formalDirect == null && directException != null) {
+                            lastStreamDiagnostics = "directException=$directException"
                         }
                         formalDirect
                     } else {
@@ -363,6 +376,9 @@ public class YTMProbe {
                         error::class.simpleName ?: "UNKNOWN"
                     }
                     logLines += "STREAM_CANDIDATE_FAIL candidate=$candidate reason=$streamFailure"
+                    if (directPlayerFastPath && stream == null) {
+                        logLines += "PROBE_DIRECT_CANDIDATE_FAIL candidate=$candidate reason=$streamFailure"
+                    }
                     if (resolveError != null) {
                         val diagnostics = resolveError.diagnostics
                         lastStreamDiagnostics = if (diagnostics != null) {
@@ -419,7 +435,9 @@ public class YTMProbe {
             val directFailure = if (directPlayerFastPath && stream == null) {
                 logLines.filter {
                     it.startsWith("PROBE_TIMING_DIRECT_PLAYER ") ||
-                        it.startsWith("PROBE_DIRECT_NULL_DIAGNOSTICS ")
+                        it.startsWith("PROBE_DIRECT_NULL_DIAGNOSTICS ") ||
+                        it.startsWith("PROBE_DIRECT_EXCEPTION ") ||
+                        it.startsWith("PROBE_DIRECT_CANDIDATE_FAIL ")
                 }
                     .joinToString(" | ")
                     .ifBlank { "no_direct_client_result" }
