@@ -95,7 +95,10 @@ final class ProbeModel: ObservableObject {
         try? configureAudioSession()
         playbackPrewarmTask = Task {
             do {
-                _ = try await playbackProbe.prepareFastPlayback(
+                // Warm the complete shared extractor bundle while the app is
+                // idle.  Visitor-data-only preparation does not populate the
+                // player config/cipher caches used by SABR extraction.
+                _ = try await playbackProbe.prewarmPlayback(
                     cookie: nil,
                     tokenGroup: "baseline",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
@@ -143,7 +146,6 @@ final class ProbeModel: ObservableObject {
             items = Array(playlist.items.prefix(100))
             currentIndex = -1
             _ = await playbackPrewarmTask?.value
-            scheduleBackgroundPrefetch()
             state = "歌单已加载：\(items.count) 首"
             verdict = "PROBE_QUEUE=PASS items=\(items.count)"
             return true
@@ -266,7 +268,9 @@ final class ProbeModel: ObservableObject {
             profile = prepared.profile
             bytes = "\(prepared.bytes)"
             verdict = "PROBE_PLAY=RUNNING resolveMs=\(lastResolveMs)"
-            schedulePrefetch(after: index, generation: generation)
+        // Do not start speculative per-track extraction here.  iOS playback
+        // currently uses SABR directly, so an eager queue scan only competes
+        // with the track the user just tapped.
         } catch is CancellationError {
             // Cancelling the previous track during a deliberate track change
             // is normal and must never be shown as a playback failure.
@@ -323,49 +327,6 @@ final class ProbeModel: ObservableObject {
                 }
                 preparedDirectCache.removeValue(forKey: item.id)
             }
-            let result = try await playbackProbe.run(
-                playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
-                videoId: item.id,
-                cookie: nil,
-                tokenGroup: "baseline",
-                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                candidateVideoIds: [item.id],
-                sampleCount: 1,
-                collectFullAudio: false,
-                forceSabr: false,
-                fastPlayback: true,
-                directPlayerFastPath: true,
-                verifyAudioPrefix: false,
-                // Let the formal extractor choose the direct-capable client
-                // for this device/network; forcing VISIONOS can return an
-                // empty result on iOS even when automatic selection works.
-                playbackClientOverrideId: nil,
-                streamSink: nil,
-            )
-            // A direct URL failure is expected on some iOS/network/client
-            // combinations. Keep its diagnostic, but let the verified SABR
-            // fallback run for interactive playback instead of stopping here.
-            let directFailureDetail: String? = result.failureStage.map { stage in
-                "\(stage)\n\(result.failureMessage ?? "无错误消息")"
-            }
-            if result.streamOk,
-               let urlString = result.audioUrl,
-               let directURL = URL(string: urlString),
-               directURL.scheme == "https",
-               !urlString.hasPrefix("sabr://") {
-                return PreparedAudio(
-                    data: nil,
-                    directURL: directURL,
-                    headers: result.audioHeaders,
-                    streamState: nil,
-                    mimeType: result.audioMimeType ?? "audio/mp4",
-                    client: result.audioClient ?? "unknown",
-                    profile: result.audioProfile ?? "unknown",
-                    bytes: result.audioExpectedBytes?.int64Value ?? 0,
-                    expiresAt: result.audioExpiresAtMs.map { Date(timeIntervalSince1970: $0.doubleValue / 1000.0) },
-                )
-            }
-
             if !allowFallback { return nil }
 
             let streamState = StreamingAudioState()
@@ -375,16 +336,14 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                playbackClientOverrideId: "VISIONOS_SABR",
                 streamSink: sink,
             )
             if handle == nil {
-                // Keep the previously verified playback path as a hard
-                // fallback. A streaming session must never make all playback
-                // unavailable when extractor setup changes upstream.
                 let fallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
-                if fallback == nil, updateUI, let directFailureDetail {
+                if fallback == nil, updateUI {
                     state = "取流失败：\(item.title)"
-                    failureDetail = directFailureDetail
+                    failureDetail = "SABR streaming 初始化失败"
                     verdict = "PROBE_PLAY=FAIL reason=direct_and_sabr_unavailable"
                 }
                 return fallback
@@ -394,7 +353,11 @@ final class ProbeModel: ObservableObject {
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
                 let snapshot = streamState.snapshot()
-                if snapshot.available >= 256 * 1024 || snapshot.completed { break }
+                // AVPlayer only needs the init atom and the first media bytes
+                // to begin decoding. Waiting for 256 KiB made startup depend
+                // on a large SABR download and was the dominant cold-start
+                // delay on iOS.
+                if snapshot.available >= 32 * 1024 || snapshot.completed { break }
                 if Task.isCancelled { handle.close(); return nil }
                 try await Task.sleep(for: .milliseconds(50))
             }
@@ -403,7 +366,7 @@ final class ProbeModel: ObservableObject {
                 handle.close()
                 if updateUI {
                     state = "SABR 首段不可用：\(item.title)"
-                    failureDetail = [directFailureDetail, snapshot.failure ?? "no_initial_media_bytes"]
+                    failureDetail = [snapshot.failure ?? "no_initial_media_bytes"]
                         .compactMap { $0 }
                         .joined(separator: "\n")
                     verdict = "PROBE_PLAY=FAIL reason=sabr_initial_segment"
@@ -432,52 +395,12 @@ final class ProbeModel: ObservableObject {
         }
     }
 
-    private func schedulePrefetch(after index: Int, generation: Int) {
-        guard let next = nextIndex(after: index), items.indices.contains(next) else { return }
-        let nextItem = items[next]
-        guard preparedDirectCache[nextItem.id] == nil else { return }
+    private func schedulePrefetch(after _: Int, generation _: Int) {
         prefetchTask?.cancel()
-        prefetchingTrackId = nextItem.id
-        prefetchTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.prefetchingTrackId == nextItem.id { self.prefetchingTrackId = nil }
-            }
-            let prepared = await self.fetchAudio(for: nextItem, updateUI: false, allowFallback: false, isPrefetch: true)
-            guard !Task.isCancelled, generation == self.playbackGeneration,
-                  let prepared, prepared.directURL != nil else { return }
-            self.cachePreparedAudio(prepared, for: nextItem.id)
-        }
-        scheduleBackgroundPrefetch(excluding: nextItem.id)
-    }
-
-    /// Resolve a small rotating set of random queue entries in the background.
-    /// This is a general queue optimization; no track is treated as a special first song.
-    private func scheduleBackgroundPrefetch(excluding excludedID: String? = nil) {
+        prefetchTask = nil
+        prefetchingTrackId = nil
         backgroundPrefetchTask?.cancel()
-        let currentID = items.indices.contains(currentIndex) ? items[currentIndex].id : nil
-        let candidates = items
-            .filter { $0.id != excludedID && $0.id != currentID && preparedDirectCache[$0.id] == nil }
-            .shuffled()
-            .prefix(8)
-        guard !candidates.isEmpty else { return }
-        let candidateItems = Array(candidates)
-        backgroundPrefetchTask = Task { [weak self] in
-            guard let self else { return }
-            for item in candidateItems {
-                guard !Task.isCancelled else { return }
-                let prepared = await self.fetchAudio(
-                    for: item,
-                    updateUI: false,
-                    allowFallback: false,
-                    isPrefetch: true,
-                )
-                guard !Task.isCancelled else { return }
-                if let prepared, prepared.directURL != nil {
-                    self.cachePreparedAudio(prepared, for: item.id)
-                }
-            }
-        }
+        backgroundPrefetchTask = nil
     }
 
     private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {

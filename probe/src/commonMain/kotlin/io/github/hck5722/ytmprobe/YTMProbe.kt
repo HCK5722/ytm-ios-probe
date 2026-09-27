@@ -105,6 +105,7 @@ public class YTMProbe {
         cookie: String? = null,
         tokenGroup: String = "baseline",
         tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
+        playbackClientOverrideId: String? = "VISIONOS_SABR",
         streamSink: AudioStreamSink,
     ): StreamingAudioHandle? {
         val useCachedPlaybackBundle = tokenGroup == "baseline"
@@ -123,7 +124,11 @@ public class YTMProbe {
             }
             val stream = extractor.extract(
                 videoId = videoId,
-                hints = ContentHints(wantVideo = false, sabrFirst = true),
+                hints = ContentHints(
+                    wantVideo = false,
+                    playbackClientOverrideId = playbackClientOverrideId,
+                    sabrFirst = true,
+                ),
                 audioQuality = AudioQuality.MP4,
             ) ?: run {
                 if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
