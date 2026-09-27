@@ -211,10 +211,11 @@ public class YTMProbe {
                     " tokenPresent=" + tokenPresent
             }
         }
-        // A cached bundle may have been created during startup with NONE logger.
-        // Use a fresh bundle for the diagnostic direct pass so extractor events
-        // are actually observable; normal SABR/non-diagnostic paths keep reuse.
-        val useCachedPlaybackBundle = fastPlayback && tokenGroup == "baseline" && !directPlayerFastPath
+        // Keep the shared bundle on the normal iOS playback path, matching
+        // Metrolist's long-lived ExtractionBundle and its prewarmed config.
+        // Failure diagnostics also have a raw-player fallback below, so this
+        // must not trade away the warmed session just to capture logger events.
+        val useCachedPlaybackBundle = fastPlayback && tokenGroup == "baseline"
         val bundle = if (useCachedPlaybackBundle) {
             getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, logger, warm = false)
         } else {

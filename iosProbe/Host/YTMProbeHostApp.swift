@@ -342,13 +342,11 @@ final class ProbeModel: ObservableObject {
                 playbackClientOverrideId: nil,
                 streamSink: nil,
             )
-            if let failureStage = result.failureStage {
-                if updateUI {
-                    state = "取流失败：\(item.title)"
-                    failureDetail = "\(failureStage)\n\(result.failureMessage ?? "无错误消息")"
-                    verdict = "PROBE_PLAY=FAIL reason=\(failureStage)"
-                }
-                return nil
+            // A direct URL failure is expected on some iOS/network/client
+            // combinations. Keep its diagnostic, but let the verified SABR
+            // fallback run for interactive playback instead of stopping here.
+            let directFailureDetail: String? = result.failureStage.map { stage in
+                "\(stage)\n\(result.failureMessage ?? "无错误消息")"
             }
             if result.streamOk,
                let urlString = result.audioUrl,
@@ -383,7 +381,13 @@ final class ProbeModel: ObservableObject {
                 // Keep the previously verified playback path as a hard
                 // fallback. A streaming session must never make all playback
                 // unavailable when extractor setup changes upstream.
-                return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                let fallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                if fallback == nil, updateUI, let directFailureDetail {
+                    state = "取流失败：\(item.title)"
+                    failureDetail = directFailureDetail
+                    verdict = "PROBE_PLAY=FAIL reason=direct_and_sabr_unavailable"
+                }
+                return fallback
             }
             guard let handle else { return nil }
             streamingHandle = handle
@@ -399,7 +403,9 @@ final class ProbeModel: ObservableObject {
                 handle.close()
                 if updateUI {
                     state = "SABR 首段不可用：\(item.title)"
-                    failureDetail = snapshot.failure ?? "no_initial_media_bytes"
+                    failureDetail = [directFailureDetail, snapshot.failure ?? "no_initial_media_bytes"]
+                        .compactMap { $0 }
+                        .joined(separator: "\n")
                     verdict = "PROBE_PLAY=FAIL reason=sabr_initial_segment"
                 }
                 return nil
