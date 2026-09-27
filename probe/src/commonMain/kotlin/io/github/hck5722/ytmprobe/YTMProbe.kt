@@ -48,17 +48,13 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.selects.select
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -354,7 +350,8 @@ public class YTMProbe {
                             .takeLast(MAX_EXTRACTOR_DIAGNOSTIC_LINES)
                             .joinToString(" || ")
                         val rawPlayerDiagnostic = if (formalDirect == null && includeRawDirectDiagnostics) {
-                            rawDirect?.diagnostic ?: "rawPlayerException=direct_player_probe_failed"
+                            rawDirect?.diagnostic
+                                ?: "rawPlayerException=${directException ?: "direct_player_probe_failed"}"
                                 .replace(Regex("[^A-Za-z0-9_.:=;,+/-]"), "_")
                                 .take(1800)
                         } else if (formalDirect == null) {
@@ -812,50 +809,35 @@ private suspend fun extractDirectPlayerAudio(
 ): DirectPlayerExtraction {
     val initialSession = innerTube.sessionSnapshot()
     val visitorData = initialSession.visitorData ?: innerTube.fetchFreshVisitorData(initialSession)
+    // Keep the raw matrix sequential on Darwin. NSURLSession/Ktor owns
+    // mutable response state, and racing several isolated InnerTube wrappers
+    // over the same Darwin engine can turn a normal HTTP response into a
+    // platform cancellation/mutability exception. The first profile normally
+    // wins in under a second; the remaining profiles are only fallback probes.
     val candidates = listOf(
         YouTubeClient.VISIONOS_0_1,
         YouTubeClient.VISIONOS,
-        YouTubeClient.MWEB,
+        YouTubeClient.WEB_REMIX,
         YouTubeClient.IOS,
         YouTubeClient.IPADOS,
-        YouTubeClient.ANDROID_VR_1_65_10,
-        YouTubeClient.ANDROID_VR_1_43_32,
-        YouTubeClient.IOS_MUSIC,
-        YouTubeClient.ANDROID_MUSIC,
-        YouTubeClient.TVHTML5,
-        YouTubeClient.WEB_REMIX,
+        YouTubeClient.MWEB,
     )
-    // Each request receives its own immutable session copy. The shared HTTP
-    // engine remains owned by the caller, while the client identities race in
-    // parallel so a dead profile cannot add seconds to cold playback.
-    val results = coroutineScope {
-        val pending = candidates.map { client ->
-            async(Dispatchers.Default) {
-                val isolated = innerTube.createIsolatedSession(includeAccount = innerTube.hasSapCookieAuth())
-                try {
-                    client to extractDirectPlayerAudioForClient(isolated, videoId, visitorData, client)
-                } finally {
-                    isolated.close()
-                }
+    val results = buildList {
+        for (client in candidates) {
+            val isolated = innerTube.createIsolatedSession(includeAccount = innerTube.hasSapCookieAuth())
+            val result = try {
+                extractDirectPlayerAudioForClient(isolated, videoId, visitorData, client)
+            } catch (error: Throwable) {
+                DirectPlayerExtraction(
+                    stream = null,
+                    diagnostic = "client=${client.clientName} exception=${formatDirectException(error)}",
+                )
+            } finally {
+                isolated.close()
             }
-        }.toMutableList<Deferred<Pair<YouTubeClient, DirectPlayerExtraction>>>()
-        val completed = mutableListOf<Pair<YouTubeClient, DirectPlayerExtraction>>()
-        while (pending.isNotEmpty()) {
-            val (finished, result) = select<Pair<Deferred<Pair<YouTubeClient, DirectPlayerExtraction>>, Pair<YouTubeClient, DirectPlayerExtraction>>> {
-                pending.forEach { deferred ->
-                    deferred.onAwait { value -> deferred to value }
-                }
-            }
-            pending.remove(finished)
-            completed += result
-            if (result.second.stream != null) {
-                // Do not make a successful direct URL wait for slow/dead
-                // profiles such as MWEB. Their requests are diagnostic only.
-                pending.forEach { it.cancel() }
-                break
-            }
+            add(client to result)
+            if (result.stream != null) break
         }
-        completed
     }
     val diagnosticSummary = results.mapIndexed { index, result ->
         "${result.first.clientName}:${result.second.diagnostic}"
@@ -868,6 +850,15 @@ private suspend fun extractDirectPlayerAudio(
             "directClients=$diagnosticSummary"
         )
 }
+
+private fun formatDirectException(error: Throwable): String =
+    listOfNotNull(
+        error::class.simpleName,
+        sanitizeFailureMessage(error.message),
+        error.cause?.let { cause ->
+            "cause=${cause::class.simpleName}:${sanitizeFailureMessage(cause.message).orEmpty()}"
+        },
+    ).joinToString(": ")
 
 private suspend fun extractDirectPlayerAudioForClient(
     innerTube: InnerTube,
