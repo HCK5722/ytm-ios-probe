@@ -52,6 +52,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
@@ -135,7 +136,16 @@ public class YTMProbe {
             val stream = if (playbackClientOverrideId == "IOS_SABR_RAW") {
                 extractRawIosSabr(innerTube, videoId)
             } else if (playbackClientOverrideId == "VISIONOS_SABR_RAW") {
-                extractRawVisionosSabr(innerTube, videoId)
+                // A rejected visionOS player request can remain pending for several
+                // seconds on iOS before YouTube returns its playability error. That
+                // delay is longer than the complete SABR fallback itself, so bound
+                // only this speculative probe and hand control back immediately.
+                withTimeoutOrNull(RAW_SABR_PROBE_TIMEOUT_MS) {
+                    extractRawVisionosSabr(innerTube, videoId)
+                } ?: run {
+                    lastStreamingFailure = "TimeoutCancellationException: raw_visionos_sabr_timeout_${RAW_SABR_PROBE_TIMEOUT_MS}ms"
+                    null
+                }
             } else {
                 extractor.extract(
                     videoId = videoId,
@@ -794,6 +804,7 @@ public class YTMProbe {
 
     private companion object {
         private const val MAX_RESPONSE_BYTES: Int = 8 * 1024 * 1024
+        private const val RAW_SABR_PROBE_TIMEOUT_MS: Long = 1_500L
         private val SAFE_LOG_VALUE = Regex("[A-Za-z0-9_.-]{1,80}")
         private val TOKEN_DIAGNOSTIC_EVENTS =
             setOf(

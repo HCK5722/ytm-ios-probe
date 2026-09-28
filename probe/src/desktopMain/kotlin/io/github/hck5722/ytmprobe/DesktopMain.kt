@@ -131,6 +131,14 @@ public fun main(args: Array<String>) {
             )
         }
         println("PROBE_STREAM_HANDLE=${if (handle != null) "PASS" else "FAIL"} resolveMs=${(System.nanoTime() - startedAt) / 1_000_000}")
+        if (handle == null) {
+            val failure = probe.lastStreamingFailure
+                .replace(Regex("https?://\\S+"), "<url>")
+                .replace(Regex("(?i)cookie[=:]\\S+"), "cookie=<redacted>")
+                .replace(Regex("[^A-Za-z0-9_.:=;,+/ -]"), "_")
+                .take(320)
+            println("PROBE_STREAM_FAILURE=${failure.ifBlank { "none" }}")
+        }
         if (handle != null) {
             runBlocking {
                 repeat(60) {

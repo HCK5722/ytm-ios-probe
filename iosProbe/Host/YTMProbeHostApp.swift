@@ -363,12 +363,12 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                // Use the experimental single-request raw SABR path first. It
-                // bypasses the automatic candidate matrix and player-config
-                // retry chain; startStreaming returns nil and the existing
-                // verified SABR/direct fallbacks remain available if bootstrap
-                // validation fails on a particular track.
-                playbackClientOverrideId: "VISIONOS_SABR_RAW",
+                // Keep innertubex's normal player-response validation and SABR
+                // bootstrap, but constrain extraction to the already verified
+                // VISIONOS SABR client. The hand-built raw request was rejected
+                // by YouTube on-device and only added several seconds before the
+                // working SABR fallback.
+                playbackClientOverrideId: "VISIONOS_SABR",
                 streamSink: sink,
             )
             if handle == nil {
