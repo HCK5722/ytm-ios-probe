@@ -201,44 +201,79 @@ final class LoopbackRangeServer: @unchecked Sendable {
         }
 
         guard let streamState else { return }
+        sendStreamingResponse(
+            client,
+            state: streamState,
+            start: requested.0,
+            requestedEnd: requested.1,
+            ranged: rangeLine != nil,
+            headOnly: headOnly,
+        )
+    }
+
+    private func sendStreamingResponse(
+        _ client: Int32,
+        state: StreamingAudioState,
+        start: Int,
+        requestedEnd: Int?,
+        ranged: Bool,
+        headOnly: Bool,
+    ) {
         let deadline = Date().addingTimeInterval(30)
+        var responseSent = false
+        var cursor = Int64(start)
+        var targetEnd: Int64?
+
         while Date() < deadline {
-            let snapshot = streamState.snapshot()
-            if let failure = snapshot.failure {
+            let snapshot = state.snapshot()
+            if let failure = snapshot.failure, !responseSent {
                 _ = failure
                 return
             }
-            let total = snapshot.expected > 0 ? snapshot.expected : snapshot.available
-            if rangeLine == nil {
-                // A streaming response cannot truthfully be a 200 until the
-                // whole file exists. Wait for completion instead of returning
-                // a truncated 200 that makes AVPlayer report -1005.
-                if snapshot.completed, snapshot.available > 0,
-                   let bytes = readFile(snapshot.path, range: 0..<Int(snapshot.available)) {
-                    sendData(client, data: bytes, range: 0..<bytes.count, total: Int(snapshot.available), partial: false, headOnly: headOnly)
-                    return
-                }
-            } else if requested.0 < snapshot.available {
-                let requestedEnd = requested.1.map(Int64.init)
-                // For an open-ended Range, give AVPlayer a useful window
-                // instead of returning only the init atom and immediately
-                // closing the socket. This avoids a reset while the decoder
-                // is still opening the fragmented MP4.
-                let minimumWindowEnd = Int64(requested.0) + 256 * 1024 - 1
-                let availableEnd = snapshot.available - 1
-                let targetEnd = requestedEnd ?? (snapshot.completed ? total - 1 : minimumWindowEnd)
-                let end = min(targetEnd, availableEnd)
-                let enoughForOpenRange = requestedEnd != nil || snapshot.completed || availableEnd >= minimumWindowEnd
-                if !enoughForOpenRange {
-                    usleep(50_000)
-                    continue
-                }
-                if end >= Int64(requested.0), let bytes = readFile(snapshot.path, range: requested.0..<Int(end + 1)) {
-                    sendData(client, data: bytes, range: 0..<bytes.count, total: Int(total), partial: true, headOnly: headOnly, contentRange: "bytes \(requested.0)-\(end)/\(total > 0 ? String(total) : "*")")
-                    return
+
+            let knownTotal = snapshot.expected > 0 ? snapshot.expected : (snapshot.completed ? snapshot.available : 0)
+            if targetEnd == nil {
+                if let requestedEnd {
+                    targetEnd = Int64(requestedEnd)
+                } else if knownTotal > 0 {
+                    targetEnd = knownTotal - 1
+                } else if snapshot.completed {
+                    targetEnd = snapshot.available - 1
                 }
             }
-            if snapshot.completed { return }
+
+            guard let end = targetEnd, end >= Int64(start) else {
+                if snapshot.completed { return }
+                usleep(50_000)
+                continue
+            }
+
+            if !responseSent {
+                let total = knownTotal > 0 ? knownTotal : end + 1
+                let contentLength = max(0, end - Int64(start) + 1)
+                let contentRange = ranged ? "bytes \(start)-\(end)/\(total > 0 ? String(total) : "*")" : nil
+                let status = ranged ? "206 Partial Content" : "200 OK"
+                var headers = "HTTP/1.1 \(status)\r\nContent-Type: \(mimeType)\r\nAccept-Ranges: bytes\r\nCache-Control: no-cache\r\nContent-Length: \(contentLength)\r\nConnection: close\r\n"
+                if let contentRange { headers += "Content-Range: \(contentRange)\r\n" }
+                headers += "\r\n"
+                sendAll(client, Array(headers.utf8))
+                responseSent = true
+                if headOnly { return }
+            }
+
+            let availableEnd = snapshot.available - 1
+            if cursor <= min(end, availableEnd),
+               let bytes = readFile(snapshot.path, range: Int(cursor)..<Int(min(end, availableEnd) + 1)),
+               !bytes.isEmpty {
+                bytes.withUnsafeBytes { raw in
+                    if let base = raw.baseAddress { sendAll(client, base, raw.count) }
+                }
+                cursor += Int64(bytes.count)
+                if cursor > end { return }
+                continue
+            }
+
+            if snapshot.completed || (snapshot.failure != nil && cursor >= snapshot.available) { return }
             usleep(50_000)
         }
     }
