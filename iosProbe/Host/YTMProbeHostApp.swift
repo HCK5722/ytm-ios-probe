@@ -36,6 +36,7 @@ final class ProbeModel: ObservableObject {
     @Published var lastResolveMs = "-"
     @Published var tapToReadyMs = "-"
     @Published var tapToAudioMs = "-"
+    @Published var sabrDiagnostics = "-"
 
     private struct PreparedAudio {
         let data: Data?
@@ -185,6 +186,7 @@ final class ProbeModel: ObservableObject {
         didRecordAudioStart = false
         tapToReadyMs = "-"
         tapToAudioMs = "-"
+        sabrDiagnostics = "-"
         failureDetail = ""
         state = "准备：\(items[index].title)"
         verdict = "PROBE_PLAY=RUNNING"
@@ -209,6 +211,7 @@ final class ProbeModel: ObservableObject {
             stopAfterFailure(index: index)
             return
         }
+        failureDetail = ""
         do {
             do {
                 try configureAudioSession()
@@ -384,6 +387,17 @@ final class ProbeModel: ObservableObject {
                 try await Task.sleep(for: .milliseconds(50))
             }
             let snapshot = streamState.snapshot()
+            if updateUI {
+                let resolveMs = playbackProbe.sabrFirstPlayerElapsedMs
+                let responseMs = snapshot.firstResponseMs.map { String($0) } ?? "pending"
+                let responseStatus = snapshot.firstResponseStatus.map { String($0) } ?? "pending"
+                let segments = snapshot.firstResponseSegments.map { String($0) } ?? "0"
+                let mediaBytes = snapshot.firstResponseMediaBytes.map { String($0) } ?? "0"
+                let firstChunkMs = snapshot.firstChunkMs.map { String($0) } ?? "pending"
+                let firstChunkIsInit = snapshot.firstChunkInitialization.map { String($0) } ?? "pending"
+                let failureCategory = snapshot.firstResponseFailureCategory.isEmpty ? "none" : snapshot.firstResponseFailureCategory
+                sabrDiagnostics = "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
+            }
             guard snapshot.available > 0, !snapshot.path.isEmpty else {
                 handle.close()
                 if updateUI {
@@ -495,6 +509,14 @@ final class ProbeModel: ObservableObject {
                 return nil
             }
             try? FileManager.default.removeItem(atPath: path)
+            if updateUI {
+                failureDetail = ""
+                verdict = "PROBE_PLAY=RUNNING fallback=complete_sabr"
+                client = fallback.audioClient ?? "unknown"
+                profile = fallback.audioProfile ?? "unknown"
+                transport = "SABR complete / \(fallback.audioMimeType ?? "audio/mp4")"
+                bytes = "\(data.count)"
+            }
             return PreparedAudio(
                 data: data,
                 directURL: nil,
@@ -844,6 +866,7 @@ struct ProbeScreen: View {
                 row("解析耗时", model.lastResolveMs)
                 row("点击到 ready", model.tapToReadyMs)
                 row("点击到出声", model.tapToAudioMs)
+                row("SABR 首响诊断", model.sabrDiagnostics)
                 row("currentTime", model.currentTime)
                 row("状态", model.state)
                 if !model.failureDetail.isEmpty { Text(model.failureDetail).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }

@@ -8,6 +8,8 @@ import kotlinx.coroutines.cancel
 public interface AudioStreamSink {
     public fun onStreamStarted(path: String, mimeType: String, client: String, profile: String, expectedBytes: String)
     public fun onChunkAvailable(bytesAvailable: String)
+    public fun onSabrResponse(elapsedMs: String, httpStatus: String, segments: String, mediaBytes: String, initializationReceived: Boolean, failureCategory: String)
+    public fun onSabrChunk(elapsedMs: String, initialization: Boolean)
     public fun onStreamCompleted()
     public fun onStreamFailed(type: String, message: String)
 }

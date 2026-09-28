@@ -10,6 +10,14 @@ final class StreamingAudioState: @unchecked Sendable {
     private(set) var availableBytes: Int64 = 0
     private(set) var completed = false
     private(set) var failure: String?
+    private(set) var firstChunkMs: Int64?
+    private(set) var firstChunkInitialization: Bool?
+    private(set) var firstResponseMs: Int64?
+    private(set) var firstResponseStatus: Int32?
+    private(set) var firstResponseSegments: Int32?
+    private(set) var firstResponseMediaBytes: Int64?
+    private(set) var firstResponseInitialization = false
+    private(set) var firstResponseFailureCategory = ""
 
     func started(path: String, mimeType: String, expectedBytes: Int64) {
         lock.lock(); defer { lock.unlock() }
@@ -22,6 +30,26 @@ final class StreamingAudioState: @unchecked Sendable {
         lock.lock(); availableBytes = max(availableBytes, bytes); lock.unlock()
     }
 
+    func recordFirstChunk(elapsedMs: Int64, initialization: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if firstChunkMs == nil {
+            firstChunkMs = elapsedMs
+            firstChunkInitialization = initialization
+        }
+    }
+
+    func recordSabrResponse(elapsedMs: Int64, status: Int32?, segments: Int32, mediaBytes: Int64, initialization: Bool, failureCategory: String) {
+        lock.lock(); defer { lock.unlock() }
+        if firstResponseMs == nil {
+            firstResponseMs = elapsedMs
+            firstResponseStatus = status
+            firstResponseSegments = segments
+            firstResponseMediaBytes = mediaBytes
+            firstResponseInitialization = initialization
+            firstResponseFailureCategory = failureCategory
+        }
+    }
+
     func completedSuccessfully() {
         lock.lock(); completed = true; lock.unlock()
     }
@@ -30,9 +58,9 @@ final class StreamingAudioState: @unchecked Sendable {
         lock.lock(); failure = message; completed = true; lock.unlock()
     }
 
-    func snapshot() -> (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?) {
+    func snapshot() -> (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String) {
         lock.lock(); defer { lock.unlock() }
-        return (path, mimeType, expectedBytes, availableBytes, completed, failure)
+        return (path, mimeType, expectedBytes, availableBytes, completed, failure, firstChunkMs, firstChunkInitialization, firstResponseMs, firstResponseStatus, firstResponseSegments, firstResponseMediaBytes, firstResponseInitialization, firstResponseFailureCategory)
     }
 }
 
@@ -47,6 +75,21 @@ final class StreamingAudioSink: AudioStreamSink {
 
     func onChunkAvailable(bytesAvailable: String) {
         state.available(Int64(bytesAvailable) ?? 0)
+    }
+
+    func onSabrResponse(elapsedMs: String, httpStatus: String, segments: String, mediaBytes: String, initializationReceived: Bool, failureCategory: String) {
+        state.recordSabrResponse(
+            elapsedMs: Int64(elapsedMs) ?? 0,
+            status: Int32(httpStatus),
+            segments: Int32(segments) ?? 0,
+            mediaBytes: Int64(mediaBytes) ?? 0,
+            initialization: initializationReceived,
+            failureCategory: failureCategory,
+        )
+    }
+
+    func onSabrChunk(elapsedMs: String, initialization: Bool) {
+        state.recordFirstChunk(elapsedMs: Int64(elapsedMs) ?? 0, initialization: initialization)
     }
 
     func onStreamCompleted() { state.completedSuccessfully() }

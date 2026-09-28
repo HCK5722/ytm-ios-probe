@@ -62,6 +62,7 @@ import kotlin.time.TimeSource
 
 public class YTMProbe {
     public var includeRawDirectDiagnostics: Boolean = true
+    public var sabrFirstPlayerElapsedMs: Long = -1L
 
     private data class PlaybackBundle(
         val client: HttpClient,
@@ -113,6 +114,8 @@ public class YTMProbe {
         playbackClientOverrideId: String? = "VISIONOS_SABR",
         streamSink: AudioStreamSink,
     ): StreamingAudioHandle? {
+        sabrFirstPlayerElapsedMs = -1L
+        val resolveStartedAt = TimeSource.Monotonic.markNow()
         val useCachedPlaybackBundle = tokenGroup == "baseline"
         val bundle = if (useCachedPlaybackBundle) {
             getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
@@ -142,6 +145,7 @@ public class YTMProbe {
             } ?: run {
                 if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
+            sabrFirstPlayerElapsedMs = resolveStartedAt.elapsedNow().inWholeMilliseconds
             val bootstrap = stream.sabrBootstrap ?: run {
                 if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
@@ -671,12 +675,10 @@ public class YTMProbe {
             formats = streaming.adaptiveFormats.filter { it.isAudio },
             audioQuality = AudioQuality.MP4,
         ) ?: return null
-        val bootstrap = runCatching {
-            playerResponse.toSabrBootstrap(
-                client = YouTubeClient.IOS_SABR,
-                audioFormat = audioFormat,
-            )
-        }.getOrNull() ?: return null
+        val bootstrap = playerResponse.toSabrBootstrap(
+            client = YouTubeClient.IOS_SABR,
+            audioFormat = audioFormat,
+        )
         return com.metrolist.innertubex.extraction.ExtractedStream(
             videoId = videoId,
             audioUrl = "sabr://$videoId",
@@ -823,9 +825,30 @@ private suspend fun collectAudio(
     var total = 0L
     val bootstrap = stream.sabrBootstrap
     if (bootstrap != null) {
-        SabrAudioStream(client, bootstrap).bytes().collect { chunk ->
+        val streamStartedAt = TimeSource.Monotonic.markNow()
+        var reportedFirstChunk = false
+        SabrAudioStream(
+            client,
+            bootstrap,
+            onResponse = { diagnostic ->
+                val elapsedMs = streamStartedAt.elapsedNow().inWholeMilliseconds
+                streamSink?.onSabrResponse(
+                    elapsedMs.toString(),
+                    diagnostic.httpStatus?.toString().orEmpty(),
+                    diagnostic.selectedSegmentCount.toString(),
+                    diagnostic.selectedMediaBytes.toString(),
+                    diagnostic.initializationReceived,
+                    diagnostic.failureCategory.orEmpty(),
+                )
+            },
+        ).chunks().collect { mediaChunk ->
+            val chunk = mediaChunk.data
             check(total + chunk.size <= maximumBytes) { "SABR playback probe exceeded 64 MiB cache limit" }
             total += chunk.size
+            if (!reportedFirstChunk) {
+                reportedFirstChunk = true
+                streamSink?.onSabrChunk(streamStartedAt.elapsedNow().inWholeMilliseconds.toString(), mediaChunk.isInitialization)
+            }
             if (streamingPath != null) {
                 val available = appendStreamingAudioFile(streamingPath, chunk)
                 streamSink?.onChunkAvailable(available.toString())
