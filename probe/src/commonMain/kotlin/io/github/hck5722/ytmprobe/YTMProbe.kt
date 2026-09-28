@@ -725,7 +725,11 @@ public class YTMProbe {
         val visitorData = innerTube.sessionSnapshot().visitorData
             ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
         val response = innerTube.player(
-            client = YouTubeClient.VISIONOS_SABR,
+            // The successful automatic path requests the base VISIONOS
+            // identity and applies SABR during extraction. The SABR copy has
+            // the same client id, but its transport marker can trigger a
+            // different server-side playability branch on iOS.
+            client = YouTubeClient.VISIONOS,
             videoId = videoId,
             requestVisitorData = visitorData,
         )
@@ -734,7 +738,11 @@ public class YTMProbe {
             DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(response.bodyAsText())
         }.getOrElse { fail("json_${it::class.simpleName ?: "decode"}") }
         if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE")) {
-            fail("playability_${playerResponse.playabilityStatus.status.replace(Regex("[^A-Za-z0-9_-]"), "_").take(40)}")
+            val reason = playerResponse.playabilityStatus.reason.orEmpty()
+                .replace(Regex("[^A-Za-z0-9 _-]"), "")
+                .replace(' ', '_')
+                .take(80)
+            fail("playability_${playerResponse.playabilityStatus.status.replace(Regex("[^A-Za-z0-9_-]"), "_").take(40)}_reason=${reason.ifBlank { "none" }}")
         }
         val streaming = playerResponse.streamingData ?: fail("missing_streaming_data")
         val audioFormat = selectBestAudioFormat(
