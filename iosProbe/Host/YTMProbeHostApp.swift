@@ -214,6 +214,10 @@ final class ProbeModel: ObservableObject {
             stopAfterFailure(index: index)
             return
         }
+        if let streamState = prepared.streamState {
+            sabrDiagnostics = sabrDiagnosticsText(snapshot: streamState.snapshot())
+            startSabrDiagnosticsPolling(streamState)
+        }
         failureDetail = ""
         do {
             do {
@@ -350,6 +354,12 @@ final class ProbeModel: ObservableObject {
             // still expose a usable googlevideo URL.
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
+            sink.onStateChanged = { [weak self] state in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: state.snapshot())
+                }
+            }
             let handle = try await playbackProbe.startStreaming(
                 videoId: item.id,
                 cookie: nil,

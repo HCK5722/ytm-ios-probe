@@ -66,6 +66,7 @@ final class StreamingAudioState: @unchecked Sendable {
 
 final class StreamingAudioSink: AudioStreamSink {
     let state: StreamingAudioState
+    var onStateChanged: ((StreamingAudioState) -> Void)?
 
     init(state: StreamingAudioState) { self.state = state }
 
@@ -86,16 +87,19 @@ final class StreamingAudioSink: AudioStreamSink {
             initialization: initializationReceived,
             failureCategory: failureCategory,
         )
+        onStateChanged?(state)
     }
 
     func onSabrChunk(elapsedMs: String, initialization: Bool) {
         state.recordFirstChunk(elapsedMs: Int64(elapsedMs) ?? 0, initialization: initialization)
+        onStateChanged?(state)
     }
 
     func onStreamCompleted() { state.completedSuccessfully() }
 
     func onStreamFailed(type: String, message: String) {
         state.failed("\(type): \(message)")
+        onStateChanged?(state)
     }
 }
 
