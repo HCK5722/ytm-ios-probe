@@ -347,11 +347,16 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
-            // SABR is the verified iOS path for the current YouTube responses.
-            // Start it before probing ordinary direct clients: the direct matrix
-            // costs several seconds and commonly returns PLAYABLE metadata with
-            // no URL on iOS. Direct remains a fallback below for profiles that
-            // still expose a usable googlevideo URL.
+            // Match Metrolist's playback policy: try an ordinary Range-capable
+            // googlevideo URL first. On clients that expose one this is the
+            // only path that can meet a cold-start target of a few seconds.
+            // SABR remains the fallback for responses that are SABR-only.
+            let directFirst = await fetchDirectFallback(for: item, updateUI: updateUI)
+            if let directFirst { return directFirst }
+
+            // SABR is the fallback for the current iOS responses. It is
+            // streaming-capable, but its client/config resolution is slower
+            // than a direct URL and must not delay the direct path above.
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in
@@ -365,18 +370,16 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                playbackClientOverrideId: "VISIONOS_SABR",
+                // Let innertubex choose the first currently playable SABR
+                // client. A hard VISIONOS_SABR override can return nil on
+                // individual tracks and force the much slower full-download
+                // fallback, even though automatic selection can stream them.
+                playbackClientOverrideId: nil,
                 streamSink: sink,
             )
             if handle == nil {
-                let fallback = await fetchDirectFallback(for: item, updateUI: updateUI)
-                let completedFallback: PreparedAudio?
-                if let fallback {
-                    completedFallback = fallback
-                } else {
-                    completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
-                }
-                if fallback == nil, updateUI {
+                let completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                if completedFallback == nil, updateUI {
                     state = "取流失败：\(item.title)"
                     failureDetail = "SABR streaming 初始化失败；direct fallback 也没有可用 URL"
                     verdict = "PROBE_PLAY=FAIL reason=direct_and_sabr_unavailable"
@@ -386,6 +389,7 @@ final class ProbeModel: ObservableObject {
             guard let handle else { return nil }
             streamingHandle = handle
             if updateUI {
+                failureDetail = ""
                 sabrDiagnostics = "playerResolveMs=\(playbackProbe.sabrFirstPlayerElapsedMs) firstResponseMs=pending httpStatus=pending segments=0 mediaBytes=0 initReceived=pending firstChunkMs=pending firstChunkIsInit=pending failureCategory=none"
                 startSabrDiagnosticsPolling(streamState)
             }

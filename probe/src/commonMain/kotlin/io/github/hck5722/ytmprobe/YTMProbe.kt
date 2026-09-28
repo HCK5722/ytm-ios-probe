@@ -311,7 +311,10 @@ public class YTMProbe {
                         ).withStreamCapabilities(
                             allowHls = false,
                             allowSabr = false,
-                            allowBoundedRange = false,
+                            // AVPlayer can issue Range requests itself. Keep
+                            // bounded-range clients eligible, matching
+                            // Metrolist's normal direct playback policy.
+                            allowBoundedRange = true,
                         )
                         captureExtractorDiagnostics = true
                         var directException: String? = null
