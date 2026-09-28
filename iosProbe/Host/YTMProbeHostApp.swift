@@ -60,9 +60,6 @@ final class ProbeModel: ObservableObject {
     private var currentTask: Task<Void, Never>?
     private var sabrDiagnosticsTask: Task<Void, Never>?
     private var streamingHandle: StreamingAudioHandle?
-    private var activeStreamingState: StreamingAudioState?
-    private var localFileFallbackTask: Task<Void, Never>?
-    private var localFileFallbackGeneration = 0
     private var playbackGeneration = 0
     private let kit = YTMKit()
     private let playbackProbe = YTMProbe()
@@ -218,11 +215,8 @@ final class ProbeModel: ObservableObject {
             return
         }
         if let streamState = prepared.streamState {
-            activeStreamingState = streamState
             sabrDiagnostics = sabrDiagnosticsText(snapshot: streamState.snapshot())
             startSabrDiagnosticsPolling(streamState)
-        } else {
-            activeStreamingState = nil
         }
         failureDetail = ""
         do {
@@ -762,14 +756,8 @@ final class ProbeModel: ObservableObject {
                     }
                     self.state = "播放中：\(trackTitle)"
                 } else if status == .failed {
-                    if self.beginLocalFileFallbackIfPossible(failedItem: item, track: track) {
-                        self.state = "本地流连接中断，等待已下载音频完成"
-                        self.failureDetail = item.error.map { "loopback=\(($0 as NSError).domain) code=\(($0 as NSError).code)\nfallback=waiting_for_complete_file" } ?? "fallback=waiting_for_complete_file"
-                        self.verdict = "PROBE_PLAY=RUNNING fallback=complete_local_file"
-                    } else {
-                        self.state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 播放失败"
-                        self.verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
-                    }
+                    self.state = item.error.map { "AVPlayer error domain=\(($0 as NSError).domain) code=\(($0 as NSError).code)" } ?? "AVPlayer 播放失败"
+                    self.verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
                 }
             }
         }
@@ -808,10 +796,6 @@ final class ProbeModel: ObservableObject {
     }
 
     private func stopCurrentPlayer() {
-        localFileFallbackTask?.cancel()
-        localFileFallbackTask = nil
-        localFileFallbackGeneration &+= 1
-        activeStreamingState = nil
         sabrDiagnosticsTask?.cancel()
         sabrDiagnosticsTask = nil
         statusObserver?.invalidate()
@@ -831,55 +815,6 @@ final class ProbeModel: ObservableObject {
         player = nil
         isPlaying = false
         rangeServer = nil
-    }
-
-    private func beginLocalFileFallbackIfPossible(failedItem: AVPlayerItem, track: ItemDTO) -> Bool {
-        guard let streamState = activeStreamingState,
-              localFileFallbackTask == nil,
-              failedItem === player?.currentItem else { return false }
-
-        let generation = playbackGeneration
-        localFileFallbackGeneration = generation
-        localFileFallbackTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.localFileFallbackTask = nil }
-            let deadline = Date().addingTimeInterval(30)
-            while !Task.isCancelled, Date() < deadline {
-                let snapshot = streamState.snapshot()
-                if snapshot.completed {
-                    guard snapshot.failure == nil,
-                          !snapshot.path.isEmpty,
-                          snapshot.available > 0,
-                          generation == self.playbackGeneration,
-                          generation == self.localFileFallbackGeneration else { return }
-                    self.switchToCompletedLocalFile(path: snapshot.path, mimeType: snapshot.mimeType, track: track)
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            guard generation == self.playbackGeneration else { return }
-            self.failureDetail = "loopback=NSURLErrorDomain:-1005\nfallback=complete_file_timeout"
-            self.verdict = "PROBE_PLAY=FAIL reason=player_not_ready"
-        }
-        return true
-    }
-
-    private func switchToCompletedLocalFile(path: String, mimeType: String, track: ItemDTO) {
-        let localURL = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: path),
-              let player,
-              localFileFallbackGeneration == playbackGeneration else { return }
-        let item = AVPlayerItem(url: localURL)
-        item.preferredForwardBufferDuration = 0
-        player.replaceCurrentItem(with: item)
-        rangeServer = nil
-        streamingHandle?.close()
-        streamingHandle = nil
-        transport = "SABR complete local / \(mimeType)"
-        failureDetail = ""
-        verdict = "PROBE_PLAY=RUNNING fallback=complete_local_file"
-        installPlayerObservers(item: item, track: track)
-        player.play()
     }
 
     private func updateNowPlaying(for track: ItemDTO? = nil, item: AVPlayerItem? = nil) {
