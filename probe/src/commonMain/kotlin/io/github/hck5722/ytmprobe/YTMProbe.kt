@@ -63,6 +63,7 @@ import kotlin.time.TimeSource
 public class YTMProbe {
     public var includeRawDirectDiagnostics: Boolean = true
     public var sabrFirstPlayerElapsedMs: Long = -1L
+    public var lastStreamingFailure: String = ""
 
     private data class PlaybackBundle(
         val client: HttpClient,
@@ -115,6 +116,7 @@ public class YTMProbe {
         streamSink: AudioStreamSink,
     ): StreamingAudioHandle? {
         sabrFirstPlayerElapsedMs = -1L
+        lastStreamingFailure = ""
         val resolveStartedAt = TimeSource.Monotonic.markNow()
         val useCachedPlaybackBundle = tokenGroup == "baseline"
         val bundle = if (useCachedPlaybackBundle) {
@@ -190,6 +192,7 @@ public class YTMProbe {
                 },
             )
         } catch (error: Throwable) {
+            lastStreamingFailure = "${error::class.simpleName ?: "KotlinException"}: ${sanitizeFailureMessage(error.message).orEmpty()}"
             if (!useCachedPlaybackBundle) {
                 innerTube.close()
                 client.close()

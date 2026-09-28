@@ -373,9 +373,21 @@ final class ProbeModel: ObservableObject {
             )
             if handle == nil {
                 if updateUI {
-                    sabrDiagnostics = sabrDiagnosticsText(snapshot: streamState.snapshot())
+                    let rawFailure = playbackProbe.lastStreamingFailure
+                        .replacingOccurrences(of: "\\n", with: "_")
+                        .replacingOccurrences(of: "\\r", with: "_")
+                        .prefix(240)
+                    sabrDiagnostics = "rawFailure=\(rawFailure.isEmpty ? "unknown" : String(rawFailure)) fallback=starting"
                 }
                 let completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                if updateUI {
+                    let rawFailure = playbackProbe.lastStreamingFailure
+                        .replacingOccurrences(of: "\\n", with: "_")
+                        .replacingOccurrences(of: "\\r", with: "_")
+                        .prefix(240)
+                    let fallbackState = completedFallback == nil ? "failed" : "complete_sabr"
+                    sabrDiagnostics = "rawFailure=\(rawFailure.isEmpty ? "unknown" : String(rawFailure)) fallback=\(fallbackState)"
+                }
                 if completedFallback == nil, updateUI {
                     state = "取流失败：\(item.title)"
                     failureDetail = "SABR streaming 初始化失败；direct fallback 也没有可用 URL"
