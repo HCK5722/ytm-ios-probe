@@ -126,7 +126,9 @@ public fun main(args: Array<String>) {
                 cookie = options.cookie,
                 tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
                 tokenServiceUrl = options.potUrl,
-                playbackClientOverrideId = options.clientOverride ?: "VISIONOS_SABR_RAW",
+                playbackClientOverrideId = options.clientOverride
+                    ?.takeUnless { it.equals("AUTO", ignoreCase = true) }
+                    ?: "VISIONOS_SABR_RAW",
                 streamSink = sink,
             )
         }

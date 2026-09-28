@@ -79,8 +79,15 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
         }
 
         let requestedOffset = max(Int64(0), dataRequest.requestedOffset)
-        let requestedLength = max(1, Int64(dataRequest.requestedLength))
-        let requestedEnd = requestedOffset + requestedLength
+        // Most requests carry the explicit EOF flag, but iOS 27 can also
+        // deliver an open-ended request with requestedLength == 0. Treat both
+        // forms as open-ended so the first SABR fragment does not terminate
+        // the loader before later media fragments arrive.
+        let requestedLength = Int64(dataRequest.requestedLength)
+        let openEnded = dataRequest.requestsAllDataToEndOfResource || requestedLength <= 0
+        let requestedEnd = openEnded
+            ? (snapshot.expected > requestedOffset ? snapshot.expected : Int64.max)
+            : requestedOffset + max(0, requestedLength)
         let currentOffset = max(requestedOffset, dataRequest.currentOffset, servedOffsets[identifier] ?? requestedOffset)
         let availableEnd = snapshot.available
 
@@ -93,7 +100,10 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
         }
 
         let updatedOffset = max(requestedOffset, dataRequest.currentOffset, servedOffsets[identifier] ?? requestedOffset)
-        if updatedOffset >= requestedEnd {
+        let requestFinished = openEnded
+            ? (snapshot.completed && updatedOffset >= min(requestedEnd, snapshot.available))
+            : (requestedLength > 0 && updatedOffset >= requestedEnd)
+        if requestFinished {
             loadingRequest.finishLoading()
             cancelled.insert(identifier)
             servedOffsets.removeValue(forKey: identifier)

@@ -19,6 +19,15 @@ final class StreamingAudioState: @unchecked Sendable {
     private(set) var firstResponseMediaBytes: Int64?
     private(set) var firstResponseInitialization = false
     private(set) var firstResponseFailureCategory = ""
+    private(set) var responseCount = 0
+    private(set) var cumulativeSegments = 0
+    private(set) var cumulativeMediaBytes: Int64 = 0
+    private(set) var lastResponseMs: Int64?
+    private(set) var lastResponseStatus: Int32?
+    private(set) var lastResponseSegments: Int32?
+    private(set) var lastResponseMediaBytes: Int64?
+    private(set) var lastResponseFailureCategory = ""
+    private(set) var lastAvailableMs: Int64?
 
     func started(path: String, mimeType: String, expectedBytes: Int64) {
         lock.lock(); defer { lock.unlock() }
@@ -33,7 +42,10 @@ final class StreamingAudioState: @unchecked Sendable {
     }
 
     func available(_ bytes: Int64) {
-        lock.lock(); availableBytes = max(availableBytes, bytes); lock.unlock()
+        lock.lock()
+        if bytes > availableBytes { lastAvailableMs = Int64(Date().timeIntervalSince1970 * 1000) }
+        availableBytes = max(availableBytes, bytes)
+        lock.unlock()
     }
 
     func recordFirstChunk(elapsedMs: Int64, initialization: Bool) {
@@ -46,6 +58,14 @@ final class StreamingAudioState: @unchecked Sendable {
 
     func recordSabrResponse(elapsedMs: Int64, status: Int32?, segments: Int32, mediaBytes: Int64, initialization: Bool, failureCategory: String) {
         lock.lock(); defer { lock.unlock() }
+        responseCount += 1
+        cumulativeSegments += Int(segments)
+        cumulativeMediaBytes += mediaBytes
+        lastResponseMs = elapsedMs
+        lastResponseStatus = status
+        lastResponseSegments = segments
+        lastResponseMediaBytes = mediaBytes
+        lastResponseFailureCategory = failureCategory
         if firstResponseMs == nil {
             firstResponseMs = elapsedMs
             firstResponseStatus = status
@@ -64,9 +84,9 @@ final class StreamingAudioState: @unchecked Sendable {
         lock.lock(); failure = message; completed = true; lock.unlock()
     }
 
-    func snapshot() -> (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, resolveMs: Int64?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String) {
+    func snapshot() -> (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, resolveMs: Int64?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String, responseCount: Int, cumulativeSegments: Int, cumulativeMediaBytes: Int64, lastResponseMs: Int64?, lastResponseStatus: Int32?, lastResponseSegments: Int32?, lastResponseMediaBytes: Int64?, lastResponseFailureCategory: String, lastAvailableMs: Int64?) {
         lock.lock(); defer { lock.unlock() }
-        return (path, mimeType, expectedBytes, availableBytes, completed, failure, resolveMs, firstChunkMs, firstChunkInitialization, firstResponseMs, firstResponseStatus, firstResponseSegments, firstResponseMediaBytes, firstResponseInitialization, firstResponseFailureCategory)
+        return (path, mimeType, expectedBytes, availableBytes, completed, failure, resolveMs, firstChunkMs, firstChunkInitialization, firstResponseMs, firstResponseStatus, firstResponseSegments, firstResponseMediaBytes, firstResponseInitialization, firstResponseFailureCategory, responseCount, cumulativeSegments, cumulativeMediaBytes, lastResponseMs, lastResponseStatus, lastResponseSegments, lastResponseMediaBytes, lastResponseFailureCategory, lastAvailableMs)
     }
 }
 

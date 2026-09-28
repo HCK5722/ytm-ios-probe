@@ -520,7 +520,10 @@ final class ProbeModel: ObservableObject {
             while !Task.isCancelled, Date() < deadline {
                 let snapshot = streamState.snapshot()
                 self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: snapshot)
-                if snapshot.firstChunkMs != nil || snapshot.failure != nil || snapshot.completed { break }
+                // Keep polling after the first chunk. The first chunk only
+                // proves that the init atom reached AVPlayer; it says
+                // nothing about later SABR responses or a stalled writer.
+                if snapshot.failure != nil || snapshot.completed { break }
                 try? await Task.sleep(for: .milliseconds(100))
             }
             let snapshot = streamState.snapshot()
@@ -528,7 +531,7 @@ final class ProbeModel: ObservableObject {
         }
     }
 
-    private func sabrDiagnosticsText(snapshot: (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, resolveMs: Int64?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String)) -> String {
+    private func sabrDiagnosticsText(snapshot: (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, resolveMs: Int64?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String, responseCount: Int, cumulativeSegments: Int, cumulativeMediaBytes: Int64, lastResponseMs: Int64?, lastResponseStatus: Int32?, lastResponseSegments: Int32?, lastResponseMediaBytes: Int64?, lastResponseFailureCategory: String, lastAvailableMs: Int64?)) -> String {
         let resolveMs = snapshot.resolveMs.map(String.init) ?? "pending"
         let responseMs = snapshot.firstResponseMs.map(String.init) ?? "pending"
         let responseStatus = snapshot.firstResponseStatus.map(String.init) ?? "pending"
@@ -537,7 +540,12 @@ final class ProbeModel: ObservableObject {
         let firstChunkMs = snapshot.firstChunkMs.map(String.init) ?? "pending"
         let firstChunkIsInit = snapshot.firstChunkInitialization.map(String.init) ?? "pending"
         let failureCategory = snapshot.firstResponseFailureCategory.isEmpty ? "none" : snapshot.firstResponseFailureCategory
-        return "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) availableBytes=\(snapshot.available)/\(snapshot.expected) completed=\(snapshot.completed) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
+        let lastResponseMs = snapshot.lastResponseMs.map(String.init) ?? "pending"
+        let lastResponseStatus = snapshot.lastResponseStatus.map(String.init) ?? "pending"
+        let lastResponseSegments = snapshot.lastResponseSegments.map(String.init) ?? "0"
+        let lastResponseBytes = snapshot.lastResponseMediaBytes.map(String.init) ?? "0"
+        let lastFailure = snapshot.lastResponseFailureCategory.isEmpty ? "none" : snapshot.lastResponseFailureCategory
+        return "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) responseCount=\(snapshot.responseCount) cumulativeSegments=\(snapshot.cumulativeSegments) cumulativeMediaBytes=\(snapshot.cumulativeMediaBytes) lastResponseMs=\(lastResponseMs) lastHttpStatus=\(lastResponseStatus) lastSegments=\(lastResponseSegments) lastMediaBytes=\(lastResponseBytes) lastFailure=\(lastFailure) availableBytes=\(snapshot.available)/\(snapshot.expected) completed=\(snapshot.completed) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
     }
 
     private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
