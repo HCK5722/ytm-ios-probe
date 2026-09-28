@@ -347,16 +347,9 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
-            // Match Metrolist's playback policy: try an ordinary Range-capable
-            // googlevideo URL first. On clients that expose one this is the
-            // only path that can meet a cold-start target of a few seconds.
-            // SABR remains the fallback for responses that are SABR-only.
-            let directFirst = await fetchDirectFallback(for: item, updateUI: updateUI)
-            if let directFirst { return directFirst }
-
-            // SABR is the fallback for the current iOS responses. It is
-            // streaming-capable, but its client/config resolution is slower
-            // than a direct URL and must not delay the direct path above.
+            // Current iPhone measurements show this track is SABR-only. Start
+            // the verified single-client SABR path immediately; ordinary
+            // direct probing remains a fallback only after SABR fails.
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in
@@ -370,11 +363,10 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                // Let innertubex choose the first currently playable SABR
-                // client. A hard VISIONOS_SABR override can return nil on
-                // individual tracks and force the much slower full-download
-                // fallback, even though automatic selection can stream them.
-                playbackClientOverrideId: nil,
+                // Avoid the automatic SABR candidate matrix on the first tap.
+                // The verified iOS path is the single VISIONOS_SABR manifest;
+                // direct probing is retained below only as a failure fallback.
+                playbackClientOverrideId: "VISIONOS_SABR",
                 streamSink: sink,
             )
             if handle == nil {
