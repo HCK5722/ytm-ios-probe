@@ -43,6 +43,7 @@ final class ProbeModel: ObservableObject {
         let directURL: URL?
         let headers: [String: String]
         let streamState: StreamingAudioState?
+        let streamingHandle: StreamingAudioHandle?
         let mimeType: String
         let client: String
         let profile: String
@@ -207,7 +208,10 @@ final class ProbeModel: ObservableObject {
         let resolveStartedAt = Date()
         let prepared = await fetchAudio(for: item, updateUI: true)
         lastResolveMs = "\(Int(Date().timeIntervalSince(resolveStartedAt) * 1000)) ms"
-        guard generation == playbackGeneration, !Task.isCancelled else { return }
+        guard generation == playbackGeneration, !Task.isCancelled else {
+            prepared?.streamingHandle?.close()
+            return
+        }
         guard let prepared else {
             // Do not hide the first real failure by cascading through the
             // entire queue. A failed SABR request needs to remain visible so
@@ -216,8 +220,11 @@ final class ProbeModel: ObservableObject {
             return
         }
         if let streamState = prepared.streamState {
+            streamingHandle = prepared.streamingHandle
             sabrDiagnostics = sabrDiagnosticsText(snapshot: streamState.snapshot())
             startSabrDiagnosticsPolling(streamState)
+        } else {
+            streamingHandle = nil
         }
         failureDetail = ""
         do {
@@ -268,8 +275,11 @@ final class ProbeModel: ObservableObject {
                 return
             }
             let newPlayer = AVPlayer(playerItem: item)
-            newPlayer.automaticallyWaitsToMinimizeStalling = false
-            item.preferredForwardBufferDuration = 0
+            // Keep a small forward buffer so playback does not stop exactly
+            // at the first SABR segment boundary. The first init/media bytes
+            // are still supplied immediately; this only changes readahead.
+            newPlayer.automaticallyWaitsToMinimizeStalling = true
+            item.preferredForwardBufferDuration = 5
             player = newPlayer
             installPlayerObservers(item: item, track: self.items[index])
             newPlayer.play()
@@ -388,7 +398,6 @@ final class ProbeModel: ObservableObject {
                 return completedFallback
             }
             guard let handle else { return nil }
-            streamingHandle = handle
             if updateUI {
                 failureDetail = ""
                 sabrDiagnostics = "playerResolveMs=\(playbackProbe.sabrFirstPlayerElapsedMs) firstResponseMs=pending httpStatus=pending segments=0 mediaBytes=0 initReceived=pending firstChunkMs=pending firstChunkIsInit=pending failureCategory=none"
@@ -438,6 +447,7 @@ final class ProbeModel: ObservableObject {
                 directURL: nil,
                 headers: [:],
                 streamState: streamState,
+                streamingHandle: handle,
                 mimeType: snapshot.mimeType,
                 client: handle.client,
                 profile: handle.profile,
@@ -527,7 +537,7 @@ final class ProbeModel: ObservableObject {
         let firstChunkMs = snapshot.firstChunkMs.map(String.init) ?? "pending"
         let firstChunkIsInit = snapshot.firstChunkInitialization.map(String.init) ?? "pending"
         let failureCategory = snapshot.firstResponseFailureCategory.isEmpty ? "none" : snapshot.firstResponseFailureCategory
-        return "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
+        return "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) availableBytes=\(snapshot.available)/\(snapshot.expected) completed=\(snapshot.completed) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
     }
 
     private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
@@ -572,6 +582,7 @@ final class ProbeModel: ObservableObject {
                 directURL: nil,
                 headers: [:],
                 streamState: nil,
+                streamingHandle: nil,
                 mimeType: fallback.audioMimeType ?? "audio/mp4",
                 client: fallback.audioClient ?? "unknown",
                 profile: fallback.audioProfile ?? "unknown",
@@ -608,6 +619,7 @@ final class ProbeModel: ObservableObject {
             directURL: url,
             headers: result.audioHeaders,
             streamState: nil,
+            streamingHandle: nil,
             mimeType: result.audioMimeType ?? "audio/mp4",
             client: result.audioClient ?? "unknown",
             profile: result.audioProfile ?? "unknown",

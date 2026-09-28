@@ -11,6 +11,7 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
     private let state: StreamingAudioState
     private var cancelled = Set<ObjectIdentifier>()
     private var servedOffsets: [ObjectIdentifier: Int64] = [:]
+    private var activeRequests: [ObjectIdentifier: AVAssetResourceLoadingRequest] = [:]
     private var invalidated = false
 
     init(state: StreamingAudioState) {
@@ -18,7 +19,18 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
     }
 
     func invalidate() {
-        queue.sync { invalidated = true }
+        queue.sync {
+            invalidated = true
+            let error = NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorCancelled,
+                userInfo: [NSLocalizedDescriptionKey: "SABR resource loader invalidated"],
+            )
+            activeRequests.values.forEach { $0.finishLoading(with: error) }
+            activeRequests.removeAll()
+            servedOffsets.removeAll()
+            cancelled.removeAll()
+        }
     }
 
     func resourceLoader(
@@ -27,6 +39,8 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
     ) -> Bool {
         queue.async { [weak self, weak loadingRequest] in
             guard let self, let loadingRequest else { return }
+            let identifier = ObjectIdentifier(loadingRequest)
+            self.activeRequests[identifier] = loadingRequest
             self.pump(loadingRequest)
         }
         return true
@@ -41,12 +55,16 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
             let identifier = ObjectIdentifier(loadingRequest)
             self.cancelled.insert(identifier)
             self.servedOffsets.removeValue(forKey: identifier)
+            self.activeRequests.removeValue(forKey: identifier)
         }
     }
 
     private func pump(_ loadingRequest: AVAssetResourceLoadingRequest) {
         let identifier = ObjectIdentifier(loadingRequest)
-        guard !invalidated, !cancelled.contains(identifier) else { return }
+        guard !invalidated, !cancelled.contains(identifier) else {
+            activeRequests.removeValue(forKey: identifier)
+            return
+        }
 
         let snapshot = state.snapshot()
         if let information = loadingRequest.contentInformationRequest {
@@ -79,6 +97,7 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
             loadingRequest.finishLoading()
             cancelled.insert(identifier)
             servedOffsets.removeValue(forKey: identifier)
+            activeRequests.removeValue(forKey: identifier)
             return
         }
 
@@ -91,6 +110,7 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
             loadingRequest.finishLoading(with: error)
             cancelled.insert(identifier)
             servedOffsets.removeValue(forKey: identifier)
+            activeRequests.removeValue(forKey: identifier)
             return
         }
 
