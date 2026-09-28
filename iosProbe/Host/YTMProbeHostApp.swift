@@ -52,6 +52,7 @@ final class ProbeModel: ObservableObject {
 
     private var player: AVPlayer?
     private var rangeServer: LoopbackRangeServer?
+    private var sabrResourceLoader: SabrResourceLoader?
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
@@ -239,19 +240,12 @@ final class ProbeModel: ObservableObject {
                 item = AVPlayerItem(asset: asset)
                 transport = "DIRECT / \(prepared.mimeType)"
             } else if let streamState = prepared.streamState {
-                let server = LoopbackRangeServer(streamState: streamState, mimeType: prepared.mimeType)
-                rangeServer = server
-                do {
-                    try server.start()
-                } catch {
-                    state = "本地音频服务启动失败"
-                    failureDetail = "stage=loopback\n\((error as NSError).localizedDescription)"
-                    verdict = "PROBE_PLAY=FAIL reason=loopback"
-                    stopAfterFailure(index: index)
-                    return
-                }
-                item = AVPlayerItem(url: server.url)
-                transport = "SABR streaming / \(prepared.mimeType)"
+                let loader = SabrResourceLoader(state: streamState)
+                sabrResourceLoader = loader
+                let asset = AVURLAsset(url: loader.url)
+                asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+                item = AVPlayerItem(asset: asset)
+                transport = "SABR resource-loader / \(prepared.mimeType)"
             } else if let data = prepared.data {
                 let server = LoopbackRangeServer(data: data, mimeType: prepared.mimeType)
                 rangeServer = server
@@ -810,6 +804,8 @@ final class ProbeModel: ObservableObject {
         }
         player?.pause()
         player?.replaceCurrentItem(with: nil)
+        sabrResourceLoader?.invalidate()
+        sabrResourceLoader = nil
         streamingHandle?.close()
         streamingHandle = nil
         player = nil
