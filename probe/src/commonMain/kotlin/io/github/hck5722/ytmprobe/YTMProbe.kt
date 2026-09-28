@@ -17,7 +17,11 @@ import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.YtConfigParser
 import com.metrolist.innertubex.extraction.selectBestAudioFormat
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
+import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
+import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
+import com.metrolist.innertubex.extraction.strategy.SelectedClient
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.YouTubeLocale
 import com.metrolist.innertubex.models.response.PlayerResponse
@@ -71,6 +75,7 @@ public class YTMProbe {
         val client: HttpClient,
         val innerTube: InnerTube,
         val extractor: InnerTubeExtractor,
+        val streamingExtractor: InnerTubeExtractor,
         val configParser: YtConfigParser,
         val cipherService: YouTubeCipherService,
     )
@@ -91,6 +96,7 @@ public class YTMProbe {
             // the direct client path concurrently instead of waiting on warm-up.
             val bundle = getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
             bundle.extractor.prewarm()
+            bundle.streamingExtractor.prewarm()
         }.isSuccess
     }
 
@@ -128,7 +134,11 @@ public class YTMProbe {
         }
         val client = bundle.client
         val innerTube = bundle.innerTube
-        val extractor = bundle.extractor
+        val extractor = if (playbackClientOverrideId == null) {
+            bundle.streamingExtractor
+        } else {
+            bundle.extractor
+        }
         try {
             cookie?.trim()?.takeIf(String::isNotEmpty)?.let {
                 innerTube.cookie = it
@@ -148,14 +158,6 @@ public class YTMProbe {
                     null
                 }
             } else {
-                val visionosOnlyExcludedClients = if (playbackClientOverrideId == null) {
-                    PlaybackClientCatalog.automaticManifests
-                        .map { it.id }
-                        .filter { it != "VISIONOS_SABR" }
-                        .toSet()
-                } else {
-                    emptySet()
-                }
                 extractor.extract(
                     videoId = videoId,
                     hints = ContentHints(
@@ -172,7 +174,7 @@ public class YTMProbe {
                         playbackClientOverrideId = playbackClientOverrideId,
                         sabrFirst = true,
                     ),
-                    excludedClients = visionosOnlyExcludedClients,
+                    excludedClients = emptySet(),
                     audioQuality = AudioQuality.MP4,
                 )
             }
@@ -701,13 +703,52 @@ public class YTMProbe {
                 tokenProvider = tokenProvider,
                 logger = logger,
             )
-            if (warm) extractor.prewarm()
-            return PlaybackBundle(client, innerTube, extractor, configParser, cipher)
+            val streamingExtractor = InnerTubeExtractor(
+                configParser = configParser,
+                cipherService = cipher,
+                innerTube = innerTube,
+                fallbackStrategy = VisionosSabrFallbackStrategy,
+                tokenProvider = tokenProvider,
+                logger = logger,
+            )
+            if (warm) {
+                extractor.prewarm()
+                streamingExtractor.prewarm()
+            }
+            return PlaybackBundle(client, innerTube, extractor, streamingExtractor, configParser, cipher)
         } catch (error: Throwable) {
             innerTube.close()
             client.close()
             throw error
         }
+    }
+
+    /**
+     * The published catalog currently rejects VISIONOS_SABR as unsupported for
+     * ordinary songs on iOS, even when the request explicitly describes an
+     * ordinary non-live, non-uploaded track. Keep the library's normal player
+     * and SABR processing, but provide this probe-only selection result so that
+     * the catalog's stale content gate cannot discard the client.
+     */
+    private object VisionosSabrFallbackStrategy : ClientFallbackStrategy {
+        private val manifest = requireNotNull(
+            PlaybackClientCatalog.findManifest("VISIONOS_SABR")
+        ) { "VISIONOS_SABR manifest is missing from innertubex catalog" }
+
+        override fun resolveClients(hints: ContentHints): List<YouTubeClient> =
+            listOf(YouTubeClient.VISIONOS_SABR)
+
+        override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult =
+            ClientSelectionResult(
+                candidates = listOf(
+                    SelectedClient(
+                        client = YouTubeClient.VISIONOS_SABR,
+                        manifest = manifest,
+                        score = Int.MAX_VALUE,
+                        reasons = listOf("probe_visionos_sabr_override"),
+                    )
+                )
+            )
     }
 
     @OptIn(ExperimentalSabrApi::class)
