@@ -61,11 +61,8 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
         }
 
         let requestedOffset = max(Int64(0), dataRequest.requestedOffset)
-        let requestsAllData = dataRequest.requestsAllDataToEndOfFile
         let requestedLength = max(1, Int64(dataRequest.requestedLength))
-        let requestedEnd: Int64? = requestsAllData
-            ? (snapshot.expected > 0 ? snapshot.expected : (snapshot.completed ? snapshot.available : nil))
-            : requestedOffset + requestedLength
+        let requestedEnd = requestedOffset + requestedLength
         let currentOffset = max(requestedOffset, dataRequest.currentOffset, servedOffsets[identifier] ?? requestedOffset)
         let availableEnd = snapshot.available
 
@@ -82,20 +79,6 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
             loadingRequest.finishLoading()
             cancelled.insert(identifier)
             servedOffsets.removeValue(forKey: identifier)
-            return
-        }
-
-        if snapshot.completed && requestedEnd == nil {
-            if updatedOffset >= snapshot.available {
-                let error = NSError(
-                    domain: "YTMProbe.SabrResourceLoader",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: snapshot.failure ?? "SABR stream ended before requested bytes arrived"],
-                )
-                loadingRequest.finishLoading(with: error)
-                cancelled.insert(identifier)
-                servedOffsets.removeValue(forKey: identifier)
-            }
             return
         }
 
