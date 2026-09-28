@@ -10,6 +10,7 @@ final class StreamingAudioState: @unchecked Sendable {
     private(set) var availableBytes: Int64 = 0
     private(set) var completed = false
     private(set) var failure: String?
+    private(set) var resolveMs: Int64?
     private(set) var firstChunkMs: Int64?
     private(set) var firstChunkInitialization: Bool?
     private(set) var firstResponseMs: Int64?
@@ -24,6 +25,11 @@ final class StreamingAudioState: @unchecked Sendable {
         self.path = path
         self.mimeType = mimeType
         self.expectedBytes = expectedBytes
+    }
+
+    func resolved(elapsedMs: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        resolveMs = elapsedMs
     }
 
     func available(_ bytes: Int64) {
@@ -58,9 +64,9 @@ final class StreamingAudioState: @unchecked Sendable {
         lock.lock(); failure = message; completed = true; lock.unlock()
     }
 
-    func snapshot() -> (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String) {
+    func snapshot() -> (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, resolveMs: Int64?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String) {
         lock.lock(); defer { lock.unlock() }
-        return (path, mimeType, expectedBytes, availableBytes, completed, failure, firstChunkMs, firstChunkInitialization, firstResponseMs, firstResponseStatus, firstResponseSegments, firstResponseMediaBytes, firstResponseInitialization, firstResponseFailureCategory)
+        return (path, mimeType, expectedBytes, availableBytes, completed, failure, resolveMs, firstChunkMs, firstChunkInitialization, firstResponseMs, firstResponseStatus, firstResponseSegments, firstResponseMediaBytes, firstResponseInitialization, firstResponseFailureCategory)
     }
 }
 
@@ -69,6 +75,11 @@ final class StreamingAudioSink: AudioStreamSink {
     var onStateChanged: ((StreamingAudioState) -> Void)?
 
     init(state: StreamingAudioState) { self.state = state }
+
+    func onStreamResolved(elapsedMs: String) {
+        state.resolved(elapsedMs: Int64(elapsedMs) ?? -1)
+        onStateChanged?(state)
+    }
 
     func onStreamStarted(path: String, mimeType: String, client: String, profile: String, expectedBytes: String) {
         state.started(path: path, mimeType: mimeType, expectedBytes: Int64(expectedBytes) ?? 0)

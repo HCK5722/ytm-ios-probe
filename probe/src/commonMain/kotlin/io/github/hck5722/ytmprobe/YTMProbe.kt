@@ -146,6 +146,7 @@ public class YTMProbe {
                 if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
             sabrFirstPlayerElapsedMs = resolveStartedAt.elapsedNow().inWholeMilliseconds
+            streamSink.onStreamResolved(sabrFirstPlayerElapsedMs.toString())
             val bootstrap = stream.sabrBootstrap ?: run {
                 if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
             }
@@ -293,6 +294,7 @@ public class YTMProbe {
             var selectedStreamBytesPulled = 0L
             var selectedPrefixReadable = false
             var selectedPrefixFailure: String? = null
+            var selectedCandidateElapsedMs = -1L
             for (candidate in streamCandidates) {
                 val candidateStartedAt = TimeSource.Monotonic.markNow()
                 streamAttempts += 1
@@ -431,6 +433,7 @@ public class YTMProbe {
                         sampleTrackResults += "videoId=$candidate result=PASS prefix=${if (pulled) "PASS" else "FAIL"} reason=${prefixFailure ?: if (pulled) "NONE" else "STREAM_BYTES_SHORT"} bytesPulled=$pulledBytes client=${candidateStream.clientName ?: "unknown"} profile=${candidateStream.profileId ?: "unknown"} sabr=${candidateStream.sabrBootstrap != null}"
                         if (stream == null) {
                             stream = candidateStream
+                            selectedCandidateElapsedMs = candidateStartedAt.elapsedNow().inWholeMilliseconds
                             selectedStreamBytesPulled = pulledBytes
                         }
                         logLines += "PROBE_TIMING_CANDIDATE video=$candidate elapsedMs=${candidateStartedAt.elapsedNow().inWholeMilliseconds} bytesPulled=$pulledBytes prefixFailure=${prefixFailure ?: "none"}"
@@ -477,6 +480,7 @@ public class YTMProbe {
                 createStreamingAudioFile()
             } else null
             if (streamingPath != null && stream != null) {
+                streamSink?.onStreamResolved(selectedCandidateElapsedMs.toString())
                 streamSink?.onStreamStarted(
                     streamingPath,
                     stream.mimeType ?: "audio/mp4",

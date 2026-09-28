@@ -6,6 +6,7 @@ import kotlinx.coroutines.cancel
 
 /** Receives progress from a SABR stream written incrementally to disk. */
 public interface AudioStreamSink {
+    public fun onStreamResolved(elapsedMs: String)
     public fun onStreamStarted(path: String, mimeType: String, client: String, profile: String, expectedBytes: String)
     public fun onChunkAvailable(bytesAvailable: String)
     public fun onSabrResponse(elapsedMs: String, httpStatus: String, segments: String, mediaBytes: String, initializationReceived: Boolean, failureCategory: String)
