@@ -159,6 +159,15 @@ public class YTMProbe {
                 extractor.extract(
                     videoId = videoId,
                     hints = ContentHints(
+                        // The playlist probe already supplies ordinary music
+                        // items. Make that fact explicit so the published
+                        // innertubex catalog does not conservatively reject the
+                        // VISIONOS_SABR manifest as unsupported content.
+                        isExplicit = false,
+                        isKidsContent = false,
+                        isAgeRestricted = false,
+                        isLive = false,
+                        isUploaded = false,
                         wantVideo = false,
                         playbackClientOverrideId = playbackClientOverrideId,
                         sabrFirst = true,
