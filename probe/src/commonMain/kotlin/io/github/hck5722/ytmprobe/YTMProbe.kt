@@ -707,7 +707,7 @@ public class YTMProbe {
                 configParser = configParser,
                 cipherService = cipher,
                 innerTube = innerTube,
-                fallbackStrategy = VisionosSabrFallbackStrategy,
+                fallbackStrategy = IosSabrFallbackStrategy,
                 tokenProvider = tokenProvider,
                 logger = logger,
             )
@@ -724,28 +724,26 @@ public class YTMProbe {
     }
 
     /**
-     * The published catalog currently rejects VISIONOS_SABR as unsupported for
-     * ordinary songs on iOS, even when the request explicitly describes an
-     * ordinary non-live, non-uploaded track. Keep the library's normal player
-     * and SABR processing, but provide this probe-only selection result so that
-     * the catalog's stale content gate cannot discard the client.
+     * The iPhone direct matrix returned PLAYABLE with SABR metadata for IOS.
+     * Select the matching SABR transport profile so the library can process
+     * that response instead of retrying the rejected VISIONOS identity.
      */
-    private object VisionosSabrFallbackStrategy : ClientFallbackStrategy {
+    private object IosSabrFallbackStrategy : ClientFallbackStrategy {
         private val manifest = requireNotNull(
-            PlaybackClientCatalog.findManifest("VISIONOS_SABR")
-        ) { "VISIONOS_SABR manifest is missing from innertubex catalog" }
+            PlaybackClientCatalog.findManifest("IOS_SABR")
+        ) { "IOS_SABR manifest is missing from innertubex catalog" }
 
         override fun resolveClients(hints: ContentHints): List<YouTubeClient> =
-            listOf(YouTubeClient.VISIONOS_SABR)
+            listOf(YouTubeClient.IOS_SABR)
 
         override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult =
             ClientSelectionResult(
                 candidates = listOf(
                     SelectedClient(
-                        client = YouTubeClient.VISIONOS_SABR,
+                        client = YouTubeClient.IOS_SABR,
                         manifest = manifest,
                         score = Int.MAX_VALUE,
-                        reasons = listOf("probe_visionos_sabr_override"),
+                        reasons = listOf("probe_ios_sabr_override"),
                     )
                 )
             )
@@ -772,10 +770,19 @@ public class YTMProbe {
             formats = streaming.adaptiveFormats.filter { it.isAudio },
             audioQuality = AudioQuality.MP4,
         ) ?: return null
-        val bootstrap = playerResponse.toSabrBootstrap(
-            client = YouTubeClient.IOS_SABR,
-            audioFormat = audioFormat,
-        )
+        val videoFormat = streaming.adaptiveFormats
+            .asSequence()
+            .filterNot(PlayerResponse.StreamingData.Format::isAudio)
+            .filter { it.height != null }
+            .minWithOrNull(compareBy({ it.height }, { it.bitrate }))
+            ?: return null
+        val bootstrap = runCatching {
+            playerResponse.toSabrBootstrap(
+                client = YouTubeClient.IOS_SABR,
+                audioFormat = audioFormat,
+                videoFormat = videoFormat,
+            )
+        }.getOrNull() ?: return null
         return com.metrolist.innertubex.extraction.ExtractedStream(
             videoId = videoId,
             audioUrl = "sabr://$videoId",
