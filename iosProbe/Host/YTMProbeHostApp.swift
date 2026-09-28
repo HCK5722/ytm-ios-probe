@@ -363,30 +363,28 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                // Keep innertubex's normal player-response validation and SABR
-                // bootstrap, but constrain extraction to the already verified
-                // VISIONOS SABR client. The hand-built raw request was rejected
-                // by YouTube on-device and only added several seconds before the
-                // working SABR fallback.
-                playbackClientOverrideId: "VISIONOS_SABR",
+                // Let innertubex use its formal automatic SABR selection. A
+                // forced VISIONOS_SABR override is accepted on desktop but is
+                // rejected by YouTube on this iPhone, causing a wasted retry.
+                playbackClientOverrideId: nil,
                 streamSink: sink,
             )
             if handle == nil {
                 if updateUI {
-                    let rawFailure = playbackProbe.lastStreamingFailure
+                    let streamFailure = playbackProbe.lastStreamingFailure
                         .replacingOccurrences(of: "\\n", with: "_")
                         .replacingOccurrences(of: "\\r", with: "_")
                         .prefix(240)
-                    sabrDiagnostics = "rawFailure=\(rawFailure.isEmpty ? "unknown" : String(rawFailure)) fallback=starting"
+                    sabrDiagnostics = "streamFailure=\(streamFailure.isEmpty ? "unknown" : String(streamFailure)) fallback=starting"
                 }
                 let completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
                 if updateUI {
-                    let rawFailure = playbackProbe.lastStreamingFailure
+                    let streamFailure = playbackProbe.lastStreamingFailure
                         .replacingOccurrences(of: "\\n", with: "_")
                         .replacingOccurrences(of: "\\r", with: "_")
                         .prefix(240)
                     let fallbackState = completedFallback == nil ? "failed" : "complete_sabr"
-                    sabrDiagnostics = "rawFailure=\(rawFailure.isEmpty ? "unknown" : String(rawFailure)) fallback=\(fallbackState)"
+                    sabrDiagnostics = "streamFailure=\(streamFailure.isEmpty ? "unknown" : String(streamFailure)) fallback=\(fallbackState)"
                 }
                 if completedFallback == nil, updateUI {
                     state = "取流失败：\(item.title)"

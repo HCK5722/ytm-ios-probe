@@ -202,7 +202,18 @@ public class YTMProbe {
                 },
             )
         } catch (error: Throwable) {
-            lastStreamingFailure = "${error::class.simpleName ?: "KotlinException"}: ${sanitizeFailureMessage(error.message).orEmpty()}"
+            val resolveError = error as? StreamResolveException
+            val attempts = resolveError?.diagnostics?.attempts
+                ?.joinToString(",") { attempt ->
+                    "${attempt.clientName}/${attempt.profileId ?: "none"}:${attempt.outcome}"
+                }
+                ?.take(800)
+            lastStreamingFailure = listOfNotNull(
+                error::class.simpleName ?: "KotlinException",
+                resolveError?.reason?.name,
+                sanitizeFailureMessage(error.message),
+                attempts?.takeIf(String::isNotBlank)?.let { "attempts=$it" },
+            ).joinToString(":")
             if (!useCachedPlaybackBundle) {
                 innerTube.close()
                 client.close()
