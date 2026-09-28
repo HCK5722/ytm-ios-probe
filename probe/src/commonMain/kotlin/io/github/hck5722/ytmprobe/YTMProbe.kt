@@ -20,6 +20,7 @@ import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
+import com.metrolist.innertubex.extraction.strategy.PoTokenRule
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.SelectedClient
 import com.metrolist.innertubex.models.YouTubeClient
@@ -729,9 +730,17 @@ public class YTMProbe {
      * that response instead of retrying the rejected VISIONOS identity.
      */
     private object IosSabrFallbackStrategy : ClientFallbackStrategy {
-        private val manifest = requireNotNull(
+        private val catalogManifest = requireNotNull(
             PlaybackClientCatalog.findManifest("IOS_SABR")
         ) { "IOS_SABR manifest is missing from innertubex catalog" }
+        // The iOS response has already been observed as PLAYABLE without a
+        // GVS token. The published catalog currently makes GVS mandatory and
+        // therefore aborts before processing that response when no attestation
+        // provider is installed. Keep the same client/request fields, but make
+        // this probe-only copy accept the observed no-token response.
+        private val manifest = catalogManifest.copy(
+            poTokens = catalogManifest.poTokens.copy(gvs = PoTokenRule())
+        )
 
         override fun resolveClients(hints: ContentHints): List<YouTubeClient> =
             listOf(YouTubeClient.IOS_SABR)
