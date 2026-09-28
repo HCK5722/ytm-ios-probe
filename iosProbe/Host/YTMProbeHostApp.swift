@@ -372,6 +372,9 @@ final class ProbeModel: ObservableObject {
                 streamSink: sink,
             )
             if handle == nil {
+                if updateUI {
+                    sabrDiagnostics = sabrDiagnosticsText(snapshot: streamState.snapshot())
+                }
                 let completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
                 if completedFallback == nil, updateUI {
                     state = "取流失败：\(item.title)"

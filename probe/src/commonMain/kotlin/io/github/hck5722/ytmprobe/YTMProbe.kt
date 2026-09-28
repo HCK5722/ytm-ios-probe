@@ -718,6 +718,7 @@ public class YTMProbe {
         innerTube: InnerTube,
         videoId: String,
     ): com.metrolist.innertubex.extraction.ExtractedStream? {
+        fun fail(reason: String): Nothing = error("raw_visionos_sabr:$reason")
         val visitorData = innerTube.sessionSnapshot().visitorData
             ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
         val response = innerTube.player(
@@ -725,27 +726,31 @@ public class YTMProbe {
             videoId = videoId,
             requestVisitorData = visitorData,
         )
-        if (!response.status.isSuccess()) return null
+        if (!response.status.isSuccess()) fail("http_${response.status.value}")
         val playerResponse = runCatching {
             DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(response.bodyAsText())
-        }.getOrNull() ?: return null
-        if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE")) return null
-        val streaming = playerResponse.streamingData ?: return null
+        }.getOrElse { fail("json_${it::class.simpleName ?: "decode"}") }
+        if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE")) {
+            fail("playability_${playerResponse.playabilityStatus.status.replace(Regex("[^A-Za-z0-9_-]"), "_").take(40)}")
+        }
+        val streaming = playerResponse.streamingData ?: fail("missing_streaming_data")
         val audioFormat = selectBestAudioFormat(
             formats = streaming.adaptiveFormats.filter { it.isAudio },
             audioQuality = AudioQuality.MP4,
-        ) ?: return null
+        ) ?: fail("missing_audio_format")
         val videoFormat = streaming.adaptiveFormats
             .asSequence()
             .filterNot(PlayerResponse.StreamingData.Format::isAudio)
             .filter { it.height != null }
             .minWithOrNull(compareBy({ it.height }, { it.bitrate }))
-            ?: return null
-        val bootstrap = playerResponse.toSabrBootstrap(
-            client = YouTubeClient.VISIONOS_SABR,
-            audioFormat = audioFormat,
-            videoFormat = videoFormat,
-        )
+            ?: fail("missing_video_discard_format")
+        val bootstrap = runCatching {
+            playerResponse.toSabrBootstrap(
+                client = YouTubeClient.VISIONOS_SABR,
+                audioFormat = audioFormat,
+                videoFormat = videoFormat,
+            )
+        }.getOrElse { fail("bootstrap_${it::class.simpleName ?: "invalid"}") }
         return com.metrolist.innertubex.extraction.ExtractedStream(
             videoId = videoId,
             audioUrl = "sabr://$videoId",
