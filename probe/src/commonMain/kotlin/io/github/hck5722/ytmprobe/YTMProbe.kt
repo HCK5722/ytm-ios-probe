@@ -17,6 +17,7 @@ import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.YtConfigParser
 import com.metrolist.innertubex.extraction.selectBestAudioFormat
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
+import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.YouTubeLocale
 import com.metrolist.innertubex.models.response.PlayerResponse
@@ -147,6 +148,14 @@ public class YTMProbe {
                     null
                 }
             } else {
+                val visionosOnlyExcludedClients = if (playbackClientOverrideId == null) {
+                    PlaybackClientCatalog.automaticManifests
+                        .map { it.id }
+                        .filter { it != "VISIONOS_SABR" }
+                        .toSet()
+                } else {
+                    emptySet()
+                }
                 extractor.extract(
                     videoId = videoId,
                     hints = ContentHints(
@@ -154,6 +163,7 @@ public class YTMProbe {
                         playbackClientOverrideId = playbackClientOverrideId,
                         sabrFirst = true,
                     ),
+                    excludedClients = visionosOnlyExcludedClients,
                     audioQuality = AudioQuality.MP4,
                 )
             }
