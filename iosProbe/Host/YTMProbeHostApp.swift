@@ -58,6 +58,7 @@ final class ProbeModel: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeObserver: NSObjectProtocol?
     private var currentTask: Task<Void, Never>?
+    private var sabrDiagnosticsTask: Task<Void, Never>?
     private var streamingHandle: StreamingAudioHandle?
     private var playbackGeneration = 0
     private let kit = YTMKit()
@@ -124,6 +125,8 @@ final class ProbeModel: ObservableObject {
             return
         }
         currentTask?.cancel()
+        sabrDiagnosticsTask?.cancel()
+        sabrDiagnosticsTask = nil
         currentTask = Task { [weak self] in
             guard let self else { return }
             if self.items.isEmpty, !(await self.loadPlaylist()) { return }
@@ -372,6 +375,10 @@ final class ProbeModel: ObservableObject {
             }
             guard let handle else { return nil }
             streamingHandle = handle
+            if updateUI {
+                sabrDiagnostics = "playerResolveMs=\(playbackProbe.sabrFirstPlayerElapsedMs) firstResponseMs=pending httpStatus=pending segments=0 mediaBytes=0 initReceived=pending firstChunkMs=pending firstChunkIsInit=pending failureCategory=none"
+                startSabrDiagnosticsPolling(streamState)
+            }
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
                 let snapshot = streamState.snapshot()
@@ -478,6 +485,33 @@ final class ProbeModel: ObservableObject {
             }
             return nil
         }
+    }
+
+    private func startSabrDiagnosticsPolling(_ streamState: StreamingAudioState) {
+        sabrDiagnosticsTask?.cancel()
+        sabrDiagnosticsTask = Task { [weak self] in
+            guard let self else { return }
+            let deadline = Date().addingTimeInterval(20)
+            while !Task.isCancelled, Date() < deadline {
+                let snapshot = streamState.snapshot()
+                self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: snapshot)
+                if snapshot.firstChunkMs != nil || snapshot.failure != nil || snapshot.completed { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let snapshot = streamState.snapshot()
+            self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: snapshot)
+        }
+    }
+
+    private func sabrDiagnosticsText(snapshot: (path: String, mimeType: String, expected: Int64, available: Int64, completed: Bool, failure: String?, firstChunkMs: Int64?, firstChunkInitialization: Bool?, firstResponseMs: Int64?, firstResponseStatus: Int32?, firstResponseSegments: Int32?, firstResponseMediaBytes: Int64?, firstResponseInitialization: Bool, firstResponseFailureCategory: String)) -> String {
+        let responseMs = snapshot.firstResponseMs.map(String.init) ?? "pending"
+        let responseStatus = snapshot.firstResponseStatus.map(String.init) ?? "pending"
+        let segments = snapshot.firstResponseSegments.map(String.init) ?? "0"
+        let mediaBytes = snapshot.firstResponseMediaBytes.map(String.init) ?? "0"
+        let firstChunkMs = snapshot.firstChunkMs.map(String.init) ?? "pending"
+        let firstChunkIsInit = snapshot.firstChunkInitialization.map(String.init) ?? "pending"
+        let failureCategory = snapshot.firstResponseFailureCategory.isEmpty ? "none" : snapshot.firstResponseFailureCategory
+        return "playerResolveMs=\(playbackProbe.sabrFirstPlayerElapsedMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
     }
 
     private func fetchCompleteSabrFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
@@ -740,6 +774,8 @@ final class ProbeModel: ObservableObject {
     }
 
     private func stopCurrentPlayer() {
+        sabrDiagnosticsTask?.cancel()
+        sabrDiagnosticsTask = nil
         statusObserver?.invalidate()
         statusObserver = nil
         if let timeObserver, let player {
