@@ -175,13 +175,12 @@ final class LoopbackRangeServer: @unchecked Sendable {
 
     private func serve(_ client: Int32) {
         defer { close(client) }
-        var request = [UInt8](repeating: 0, count: 8192)
-        let size = request.withUnsafeMutableBytes { raw in
-            guard let base = raw.baseAddress else { return 0 }
-            return recv(client, base, raw.count, 0)
-        }
-        guard size > 0, let text = String(bytes: request[..<size], encoding: .utf8) else { return }
-        let rangeLine = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
+        guard let text = readRequest(client) else { return }
+        let lines = text.components(separatedBy: "\r\n")
+        let requestLine = lines.first ?? ""
+        let method = requestLine.split(separator: " ", maxSplits: 1).first.map(String.init)?.uppercased() ?? "GET"
+        let headOnly = method == "HEAD"
+        let rangeLine = lines.first { $0.lowercased().hasPrefix("range:") }
         let requested = rangeLine.flatMap { line -> (Int, Int?)? in
             guard let match = line.range(of: #"bytes=(\d+)-(\d*)"#, options: .regularExpression) else { return nil }
             let parts = line[match].dropFirst(6).split(separator: "-", omittingEmptySubsequences: false)
@@ -191,9 +190,13 @@ final class LoopbackRangeServer: @unchecked Sendable {
 
         if let data {
             let total = data.count
+            if rangeLine == nil {
+                sendData(client, data: data, range: 0..<total, total: total, partial: false, headOnly: headOnly)
+                return
+            }
             guard requested.0 < total else { return }
             let end = min(requested.1 ?? (total - 1), total - 1)
-            sendData(client, data: data, range: requested.0..<(end + 1), total: total, partial: rangeLine != nil)
+            sendData(client, data: data, range: requested.0..<(end + 1), total: total, partial: true, headOnly: headOnly)
             return
         }
 
@@ -206,17 +209,54 @@ final class LoopbackRangeServer: @unchecked Sendable {
                 return
             }
             let total = snapshot.expected > 0 ? snapshot.expected : snapshot.available
-            if requested.0 < snapshot.available {
+            if rangeLine == nil {
+                // A streaming response cannot truthfully be a 200 until the
+                // whole file exists. Wait for completion instead of returning
+                // a truncated 200 that makes AVPlayer report -1005.
+                if snapshot.completed, snapshot.available > 0,
+                   let bytes = readFile(snapshot.path, range: 0..<Int(snapshot.available)) {
+                    sendData(client, data: bytes, range: 0..<bytes.count, total: Int(snapshot.available), partial: false, headOnly: headOnly)
+                    return
+                }
+            } else if requested.0 < snapshot.available {
                 let requestedEnd = requested.1.map(Int64.init)
-                let end = min(requestedEnd ?? (snapshot.completed ? total - 1 : snapshot.available - 1), snapshot.available - 1)
+                // For an open-ended Range, give AVPlayer a useful window
+                // instead of returning only the init atom and immediately
+                // closing the socket. This avoids a reset while the decoder
+                // is still opening the fragmented MP4.
+                let minimumWindowEnd = Int64(requested.0) + 256 * 1024 - 1
+                let availableEnd = snapshot.available - 1
+                let targetEnd = requestedEnd ?? (snapshot.completed ? total - 1 : minimumWindowEnd)
+                let end = min(targetEnd, availableEnd)
+                let enoughForOpenRange = requestedEnd != nil || snapshot.completed || availableEnd >= minimumWindowEnd
+                if !enoughForOpenRange {
+                    usleep(50_000)
+                    continue
+                }
                 if end >= Int64(requested.0), let bytes = readFile(snapshot.path, range: requested.0..<Int(end + 1)) {
-                    sendData(client, data: bytes, range: 0..<bytes.count, total: Int(total), partial: true, contentRange: "bytes \(requested.0)-\(end)/\(total > 0 ? String(total) : "*")")
+                    sendData(client, data: bytes, range: 0..<bytes.count, total: Int(total), partial: true, headOnly: headOnly, contentRange: "bytes \(requested.0)-\(end)/\(total > 0 ? String(total) : "*")")
                     return
                 }
             }
             if snapshot.completed { return }
             usleep(50_000)
         }
+    }
+
+    private func readRequest(_ client: Int32) -> String? {
+        var received = Data()
+        let terminator = Data([13, 10, 13, 10])
+        while received.count < 16 * 1024 {
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let size = chunk.withUnsafeMutableBytes { raw in
+                guard let base = raw.baseAddress else { return 0 }
+                return recv(client, base, raw.count, 0)
+            }
+            guard size > 0 else { break }
+            received.append(contentsOf: chunk[0..<size])
+            if received.range(of: terminator) != nil { break }
+        }
+        return String(data: received, encoding: .utf8)
     }
 
     private func readFile(_ path: String, range: Range<Int>) -> Data? {
@@ -226,13 +266,14 @@ final class LoopbackRangeServer: @unchecked Sendable {
         return try? file.read(upToCount: range.count) ?? nil
     }
 
-    private func sendData(_ client: Int32, data: Data, range: Range<Int>, total: Int, partial: Bool, contentRange: String? = nil) {
+    private func sendData(_ client: Int32, data: Data, range: Range<Int>, total: Int, partial: Bool, headOnly: Bool = false, contentRange: String? = nil) {
         let status = partial ? "206 Partial Content" : "200 OK"
-        var headers = "HTTP/1.1 \(status)\r\nContent-Type: \(mimeType)\r\nAccept-Ranges: bytes\r\nContent-Length: \(range.count)\r\nConnection: close\r\n"
+        var headers = "HTTP/1.1 \(status)\r\nContent-Type: \(mimeType)\r\nAccept-Ranges: bytes\r\nCache-Control: no-cache\r\nContent-Length: \(range.count)\r\nConnection: close\r\n"
         if let contentRange { headers += "Content-Range: \(contentRange)\r\n" }
         else if partial { headers += "Content-Range: bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)\r\n" }
         headers += "\r\n"
         sendAll(client, Array(headers.utf8))
+        if headOnly { return }
         data.subdata(in: range).withUnsafeBytes { raw in
             if let base = raw.baseAddress { sendAll(client, base, raw.count) }
         }
