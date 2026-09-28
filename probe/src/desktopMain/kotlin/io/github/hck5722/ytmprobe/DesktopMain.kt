@@ -2,6 +2,9 @@ package io.github.hck5722.ytmprobe
 
 import java.net.HttpURLConnection
 import java.net.URI
+import java.io.File
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
 private data class Options(
@@ -19,6 +22,7 @@ private data class Options(
     val forceSabr: Boolean,
     val verifyPrefix: Boolean,
     val directMatrix: List<String>,
+    val streamingProbe: Boolean,
 )
 
 public fun main(args: Array<String>) {
@@ -91,6 +95,53 @@ public fun main(args: Array<String>) {
             }
         }
         println("PROBE_DIRECT_MATRIX_END")
+        return
+    }
+    if (options.streamingProbe) {
+        val videoId = options.video ?: options.videos.firstOrNull() ?: "DcDbKDAb7go"
+        val sink = object : AudioStreamSink {
+            val available = AtomicLong(0)
+            var path = ""
+            override fun onStreamResolved(elapsedMs: String) = println("PROBE_STREAM_RESOLVED elapsedMs=$elapsedMs")
+            override fun onStreamStarted(path: String, mimeType: String, client: String, profile: String, expectedBytes: String) {
+                this.path = path
+                println("PROBE_STREAM_STARTED mime=$mimeType client=$client profile=$profile expectedBytes=$expectedBytes")
+            }
+            override fun onChunkAvailable(bytesAvailable: String) {
+                available.set(bytesAvailable.toLongOrNull() ?: 0L)
+            }
+            override fun onSabrResponse(elapsedMs: String, httpStatus: String, segments: String, mediaBytes: String, initializationReceived: Boolean, failureCategory: String) {
+                println("PROBE_SABR_RESPONSE elapsedMs=$elapsedMs httpStatus=$httpStatus segments=$segments mediaBytes=$mediaBytes init=$initializationReceived failure=$failureCategory")
+            }
+            override fun onSabrChunk(elapsedMs: String, initialization: Boolean) {
+                println("PROBE_SABR_CHUNK elapsedMs=$elapsedMs init=$initialization")
+            }
+            override fun onStreamCompleted() = println("PROBE_STREAM_COMPLETED bytes=${available.get()}")
+            override fun onStreamFailed(type: String, message: String) = println("PROBE_STREAM_FAILED type=$type message=${message.take(240)}")
+        }
+        val startedAt = System.nanoTime()
+        val handle = runBlocking {
+            probe.startStreaming(
+                videoId = videoId,
+                cookie = options.cookie,
+                tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
+                tokenServiceUrl = options.potUrl,
+                playbackClientOverrideId = options.clientOverride ?: "VISIONOS_SABR_RAW",
+                streamSink = sink,
+            )
+        }
+        println("PROBE_STREAM_HANDLE=${if (handle != null) "PASS" else "FAIL"} resolveMs=${(System.nanoTime() - startedAt) / 1_000_000}")
+        if (handle != null) {
+            runBlocking {
+                repeat(60) {
+                    delay(50)
+                    if (sink.available.get() > 0) return@repeat
+                }
+            }
+            val bytes = sink.path.takeIf(String::isNotBlank)?.let { File(it).length() } ?: 0L
+            println("PROBE_STREAM_BYTES bytes=$bytes")
+            handle.close()
+        }
         return
     }
     val startedAt = System.nanoTime()
@@ -176,6 +227,7 @@ private fun parseOptions(args: Array<String>): Options {
     var forceSabr = false
     var verifyPrefix = false
     var directMatrix = emptyList<String>()
+    var streamingProbe = false
     args.forEach { arg ->
         when {
             arg.startsWith("--providers=") -> providers = arg.substringAfter('=').uppercase()
@@ -190,6 +242,7 @@ private fun parseOptions(args: Array<String>): Options {
             arg == "--direct-player" -> directPlayer = true
             arg == "--sabr" -> forceSabr = true
             arg == "--verify-prefix" -> verifyPrefix = true
+            arg == "--streaming" -> streamingProbe = true
             arg.startsWith("--direct-matrix=") -> directMatrix = arg.substringAfter('=').split(',').map(String::trim).filter(String::isNotBlank)
             arg == "--cookie=env:YT_COOKIE" -> cookie = System.getenv("YT_COOKIE")?.takeIf(String::isNotBlank)
             arg.startsWith("--cookie=") -> error("cookie 参数只允许 --cookie=env:YT_COOKIE")
@@ -204,7 +257,7 @@ private fun parseOptions(args: Array<String>): Options {
     require(videos.size <= 30) { "--videos 最多支持 30 个 ID" }
     require(directMatrix.size <= 12) { "--direct-matrix 最多支持 12 个客户端" }
     require(directMatrix.all { it.matches(Regex("[A-Z0-9_]+")) }) { "--direct-matrix 客户端 ID 格式无效" }
-    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer, forceSabr, verifyPrefix, directMatrix)
+    return Options(providers, potUrl, cookie, video, videos, sampleCount, fastPlayback, repeat, clientOverride, noPrewarm, directPlayer, forceSabr, verifyPrefix, directMatrix, streamingProbe)
 }
 
 private val DEFAULT_CANDIDATES = listOf("DcDbKDAb7go", "XgAgFCO-ufI", "MpevbZazUf8", "nqMYG2Riq54")

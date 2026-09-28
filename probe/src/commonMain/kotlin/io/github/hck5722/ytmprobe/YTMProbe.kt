@@ -132,6 +132,8 @@ public class YTMProbe {
             }
             val stream = if (playbackClientOverrideId == "IOS_SABR_RAW") {
                 extractRawIosSabr(innerTube, videoId)
+            } else if (playbackClientOverrideId == "VISIONOS_SABR_RAW") {
+                extractRawVisionosSabr(innerTube, videoId)
             } else {
                 extractor.extract(
                     videoId = videoId,
@@ -142,8 +144,10 @@ public class YTMProbe {
                     ),
                     audioQuality = AudioQuality.MP4,
                 )
-            } ?: run {
-                if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }; return null
+            }
+            if (stream == null) {
+                if (!useCachedPlaybackBundle) { innerTube.close(); client.close() }
+                return null
             }
             sabrFirstPlayerElapsedMs = resolveStartedAt.elapsedNow().inWholeMilliseconds
             streamSink.onStreamResolved(sabrFirstPlayerElapsedMs.toString())
@@ -302,6 +306,8 @@ public class YTMProbe {
                 try {
                     val candidateStream = if (forceSabr && playbackClientOverrideId == "IOS_SABR_RAW") {
                         extractRawIosSabr(innerTube, candidate)
+                    } else if (forceSabr && playbackClientOverrideId == "VISIONOS_SABR_RAW") {
+                        extractRawVisionosSabr(innerTube, candidate)
                     } else if (directPlayerFastPath && !forceSabr) {
                         val directStartedAt = TimeSource.Monotonic.markNow()
                         val directHints = ContentHints(
@@ -700,6 +706,60 @@ public class YTMProbe {
             sampleRate = audioFormat.audioSampleRate,
             clientName = "IOS",
             profileId = "IOS_SABR__raw",
+            requireBoundedRange = false,
+            rangeChunkSizeBytes = 1_048_576L,
+            sabrBootstrap = bootstrap,
+        )
+    }
+
+    /** Experimental single-request SABR probe; bypasses client selection/config retries. */
+    @OptIn(ExperimentalSabrApi::class)
+    private suspend fun extractRawVisionosSabr(
+        innerTube: InnerTube,
+        videoId: String,
+    ): com.metrolist.innertubex.extraction.ExtractedStream? {
+        val visitorData = innerTube.sessionSnapshot().visitorData
+            ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
+        val response = innerTube.player(
+            client = YouTubeClient.VISIONOS_SABR,
+            videoId = videoId,
+            requestVisitorData = visitorData,
+        )
+        if (!response.status.isSuccess()) return null
+        val playerResponse = runCatching {
+            DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(response.bodyAsText())
+        }.getOrNull() ?: return null
+        if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE")) return null
+        val streaming = playerResponse.streamingData ?: return null
+        val audioFormat = selectBestAudioFormat(
+            formats = streaming.adaptiveFormats.filter { it.isAudio },
+            audioQuality = AudioQuality.MP4,
+        ) ?: return null
+        val videoFormat = streaming.adaptiveFormats
+            .asSequence()
+            .filterNot(PlayerResponse.StreamingData.Format::isAudio)
+            .filter { it.height != null }
+            .minWithOrNull(compareBy({ it.height }, { it.bitrate }))
+            ?: return null
+        val bootstrap = playerResponse.toSabrBootstrap(
+            client = YouTubeClient.VISIONOS_SABR,
+            audioFormat = audioFormat,
+            videoFormat = videoFormat,
+        )
+        return com.metrolist.innertubex.extraction.ExtractedStream(
+            videoId = videoId,
+            audioUrl = "sabr://$videoId",
+            headers = emptyMap(),
+            loudnessDb = audioFormat.loudnessDb,
+            expiresAt = streaming.expiresInSeconds?.takeIf { it > 0 }?.let { Clock.System.now() + it.seconds },
+            contentLengthBytes = audioFormat.contentLength,
+            itag = audioFormat.itag,
+            mimeType = audioFormat.mimeType.substringBefore(';').trim(),
+            codecs = Regex("codecs=\"([^\"]+)\"").find(audioFormat.mimeType)?.groupValues?.getOrNull(1),
+            bitrate = audioFormat.bitrate,
+            sampleRate = audioFormat.audioSampleRate,
+            clientName = "VISIONOS",
+            profileId = "VISIONOS_SABR__raw",
             requireBoundedRange = false,
             rangeChunkSizeBytes = 1_048_576L,
             sabrBootstrap = bootstrap,

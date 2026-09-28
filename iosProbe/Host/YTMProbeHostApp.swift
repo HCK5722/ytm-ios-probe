@@ -363,10 +363,12 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                // Avoid the automatic SABR candidate matrix on the first tap.
-                // The verified iOS path is the single VISIONOS_SABR manifest;
-                // direct probing is retained below only as a failure fallback.
-                playbackClientOverrideId: "VISIONOS_SABR",
+                // Use the experimental single-request raw SABR path first. It
+                // bypasses the automatic candidate matrix and player-config
+                // retry chain; startStreaming returns nil and the existing
+                // verified SABR/direct fallbacks remain available if bootstrap
+                // validation fails on a particular track.
+                playbackClientOverrideId: "VISIONOS_SABR_RAW",
                 streamSink: sink,
             )
             if handle == nil {
