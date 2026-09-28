@@ -67,7 +67,7 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
         let availableEnd = snapshot.available
 
         if currentOffset < availableEnd {
-            let end = min(requestedEnd ?? availableEnd, availableEnd)
+            let end = min(requestedEnd, availableEnd)
             if let bytes = readFile(snapshot.path, start: currentOffset, end: end), !bytes.isEmpty {
                 dataRequest.respond(with: bytes)
                 servedOffsets[identifier] = currentOffset + Int64(bytes.count)
@@ -75,7 +75,7 @@ final class SabrResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchec
         }
 
         let updatedOffset = max(requestedOffset, dataRequest.currentOffset, servedOffsets[identifier] ?? requestedOffset)
-        if let requestedEnd, updatedOffset >= requestedEnd {
+        if updatedOffset >= requestedEnd {
             loadingRequest.finishLoading()
             cancelled.insert(identifier)
             servedOffsets.removeValue(forKey: identifier)
