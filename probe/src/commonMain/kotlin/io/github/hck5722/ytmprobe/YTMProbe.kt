@@ -85,6 +85,9 @@ public class YTMProbe {
     private var cachedPlaybackBundle: PlaybackBundle? = null
     private var cachedPlaybackKey: String? = null
 
+    /** Host hook for a platform-native PoToken/attestation implementation. */
+    public var iosTokenProvider: TokenProvider? = null
+
     /** Preloads the same extractor bundle that Metrolist keeps alive globally. */
     public suspend fun prewarmPlayback(
         cookie: String? = null,
@@ -690,10 +693,10 @@ public class YTMProbe {
             val configRepository = createPlayerConfigRepository()
             val remoteStore = RemotePlayerConfigStore(client, configRepository, logger)
             val cipher = YouTubeCipherService(client, remoteStore, logger)
-            val tokenProvider = if (tokenGroup == "2a") {
-                BgutilTokenProvider(client, tokenServiceUrl, mutableListOf())
-            } else {
-                null
+            val tokenProvider = when {
+                tokenGroup == "2a" -> BgutilTokenProvider(client, tokenServiceUrl, mutableListOf())
+                tokenGroup == "ios-external" -> iosTokenProvider ?: BgutilTokenProvider(client, tokenServiceUrl, mutableListOf())
+                else -> null
             }
             val configParser = YtConfigParserImpl(client, innerTube, remoteStore, logger)
                 .withEmbeddedConfigFallback()

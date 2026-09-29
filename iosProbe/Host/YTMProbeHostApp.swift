@@ -65,6 +65,7 @@ final class ProbeModel: ObservableObject {
     private var playbackGeneration = 0
     private let kit = YTMKit()
     private let playbackProbe = YTMProbe()
+    private let poTokenService = PoTokenService()
     private var playbackPrewarmTask: Task<Void, Never>?
     private var configuredAudio = false
     private var preparedDirectCache: [String: PreparedAudio] = [:]
@@ -75,6 +76,7 @@ final class ProbeModel: ObservableObject {
     private var didRecordAudioStart = false
 
     init() {
+        poTokenService.start()
         configureRemoteCommands()
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -365,7 +367,7 @@ final class ProbeModel: ObservableObject {
             let handle = try await playbackProbe.startStreaming(
                 videoId: item.id,
                 cookie: nil,
-                tokenGroup: "baseline",
+                tokenGroup: "ios-external",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
                 // Let innertubex use its formal automatic SABR selection. A
                 // forced VISIONOS_SABR override is accepted on desktop but is
