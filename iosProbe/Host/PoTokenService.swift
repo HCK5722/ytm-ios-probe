@@ -93,10 +93,12 @@ final class PoTokenService: @unchecked Sendable {
             reply(connection, status: 400, object: ["error": "invalid_request"])
             return
         }
+        NSLog("PROBE_POT_SERVICE request type=%@ bindingPresent=1 bindingLength=%d", tokenType, binding.count)
         Task { @MainActor in
             do {
                 if self.engine == nil { self.engine = PoTokenEngine() }
                 let token = try await self.engine!.token(for: binding, type: tokenType)
+                NSLog("PROBE_POT_SERVICE result type=%@ tokenPresent=1 tokenLength=%d", tokenType, token.count)
                 self.reply(connection, status: 200, object: [
                     "poToken": token,
                     "contentBinding": binding,

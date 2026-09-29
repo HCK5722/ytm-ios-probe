@@ -94,7 +94,7 @@ public class YTMProbe {
         tokenGroup: String = "baseline",
         tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
     ): Boolean {
-        if (tokenGroup != "baseline") return false
+        if (tokenGroup != "baseline" && tokenGroup != "ios-external") return false
         return runCatching {
             // Publish the shared bundle before warming it. Playback can then enter
             // the direct client path concurrently instead of waiting on warm-up.
@@ -130,7 +130,7 @@ public class YTMProbe {
         sabrFirstPlayerElapsedMs = -1L
         lastStreamingFailure = ""
         val resolveStartedAt = TimeSource.Monotonic.markNow()
-        val useCachedPlaybackBundle = tokenGroup == "baseline"
+        val useCachedPlaybackBundle = tokenGroup == "baseline" || tokenGroup == "ios-external"
         val bundle = if (useCachedPlaybackBundle) {
             getCachedPlaybackBundle(cookie, tokenGroup, tokenServiceUrl, InnerTubeLogger.NONE, warm = false)
         } else {
@@ -711,7 +711,11 @@ public class YTMProbe {
                 configParser = configParser,
                 cipherService = cipher,
                 innerTube = innerTube,
-                fallbackStrategy = IosSabrFallbackStrategy,
+                fallbackStrategy = if (tokenProvider != null) {
+                    IosSabrTokenFallbackStrategy
+                } else {
+                    IosSabrFallbackStrategy
+                },
                 tokenProvider = tokenProvider,
                 logger = logger,
             )
@@ -756,6 +760,33 @@ public class YTMProbe {
                         manifest = manifest,
                         score = Int.MAX_VALUE,
                         reasons = listOf("probe_ios_sabr_override"),
+                    )
+                )
+            )
+    }
+
+    /**
+     * Selects the published IOS_SABR manifest when an attestation-capable
+     * provider is installed. Unlike the probe-only no-token manifest above,
+     * this keeps the catalog's GVS token requirement so the provider is
+     * actually invoked and the resulting request is accepted by YouTube.
+     */
+    private object IosSabrTokenFallbackStrategy : ClientFallbackStrategy {
+        private val manifest = requireNotNull(
+            PlaybackClientCatalog.findManifest("IOS_SABR")
+        ) { "IOS_SABR manifest is missing from innertubex catalog" }
+
+        override fun resolveClients(hints: ContentHints): List<YouTubeClient> =
+            listOf(YouTubeClient.IOS_SABR)
+
+        override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult =
+            ClientSelectionResult(
+                candidates = listOf(
+                    SelectedClient(
+                        client = YouTubeClient.IOS_SABR,
+                        manifest = manifest,
+                        score = Int.MAX_VALUE,
+                        reasons = listOf("probe_ios_sabr_external_token"),
                     )
                 )
             )

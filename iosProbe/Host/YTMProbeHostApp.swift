@@ -106,7 +106,7 @@ final class ProbeModel: ObservableObject {
                 // player config/cipher caches used by SABR extraction.
                 _ = try await playbackProbe.prewarmPlayback(
                     cookie: nil,
-                    tokenGroup: "baseline",
+                    tokenGroup: "ios-external",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
                 )
                 // Direct-player extraction needs visitor data as well as the
@@ -114,7 +114,7 @@ final class ProbeModel: ObservableObject {
                 // idle so the first cold tap starts with a ready session.
                 _ = try? await playbackProbe.prepareFastPlayback(
                     cookie: nil,
-                    tokenGroup: "baseline",
+                    tokenGroup: "ios-external",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
                 )
             } catch {
