@@ -8,12 +8,26 @@ final class PoTokenService: @unchecked Sendable {
     private let queue = DispatchQueue(label: "ytm.probe.potoken", qos: .userInitiated)
     private var listener: NWListener?
     private var engine: PoTokenEngine?
+    private var requestCount = 0
+    private var successCount = 0
+    private var failureCount = 0
+    private var engineStatus = "starting"
+    private var lastResult = "none"
+
+    var diagnosticSummary: String {
+        "engine=\(engineStatus) requests=\(requestCount) success=\(successCount) failed=\(failureCount) last=\(lastResult)"
+    }
 
     func start() {
         guard listener == nil else { return }
         Task { @MainActor in
             if self.engine == nil { self.engine = PoTokenEngine() }
-            try? await self.engine?.prewarm()
+            do {
+                try await self.engine?.prewarm()
+                self.engineStatus = "ready"
+            } catch {
+                self.engineStatus = "failed_\(String(describing: error))"
+            }
         }
         do {
             let newListener = try NWListener(using: .tcp, on: 4416)
@@ -94,16 +108,24 @@ final class PoTokenService: @unchecked Sendable {
             return
         }
         NSLog("PROBE_POT_SERVICE request type=%@ bindingPresent=1 bindingLength=%d", tokenType, binding.count)
+        requestCount += 1
+        lastResult = "pending_\(tokenType)"
         Task { @MainActor in
             do {
                 if self.engine == nil { self.engine = PoTokenEngine() }
                 let token = try await self.engine!.token(for: binding, type: tokenType)
+                self.successCount += 1
+                self.engineStatus = "ready"
+                self.lastResult = "ok_\(tokenType)_len\(token.count)"
                 NSLog("PROBE_POT_SERVICE result type=%@ tokenPresent=1 tokenLength=%d", tokenType, token.count)
                 self.reply(connection, status: 200, object: [
                     "poToken": token,
                     "contentBinding": binding,
                 ])
             } catch {
+                self.failureCount += 1
+                self.engineStatus = "failed"
+                self.lastResult = "failed_\(tokenType)_\(String(describing: error))"
                 NSLog("PROBE_POT_SERVICE token_failed type=%@", String(describing: error))
                 self.reply(connection, status: 503, object: ["error": "token_unavailable"])
             }

@@ -37,6 +37,7 @@ final class ProbeModel: ObservableObject {
     @Published var tapToReadyMs = "-"
     @Published var tapToAudioMs = "-"
     @Published var sabrDiagnostics = "-"
+    @Published var poTokenDiagnostics = "-"
 
     private struct PreparedAudio {
         let data: Data?
@@ -77,6 +78,12 @@ final class ProbeModel: ObservableObject {
 
     init() {
         poTokenService.start()
+        Task { @MainActor in
+            while !Task.isCancelled {
+                self.poTokenDiagnostics = poTokenService.diagnosticSummary
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
         configureRemoteCommands()
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -942,6 +949,7 @@ struct ProbeScreen: View {
                 row("解析耗时", model.lastResolveMs)
                 row("点击到 ready", model.tapToReadyMs)
                 row("点击到出声", model.tapToAudioMs)
+                row("本地 PoToken", model.poTokenDiagnostics)
                 row("SABR 首响诊断", model.sabrDiagnostics)
                 row("currentTime", model.currentTime)
                 row("状态", model.state)
