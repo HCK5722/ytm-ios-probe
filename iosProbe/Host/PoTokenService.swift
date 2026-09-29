@@ -13,6 +13,7 @@ final class PoTokenService: @unchecked Sendable {
         guard listener == nil else { return }
         Task { @MainActor in
             if self.engine == nil { self.engine = PoTokenEngine() }
+            try? await self.engine?.prewarm()
         }
         do {
             let newListener = try NWListener(using: .tcp, on: 4416)
@@ -149,12 +150,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     }
 
     func token(for binding: String, type: String) async throws -> String {
-        if !ready {
-            if initialization == nil {
-                initialization = Task { try await initialize() }
-            }
-            try await initialization?.value
-        }
+        try await prewarm()
         guard ready else { throw PoTokenError.notReady }
         if type == "streaming" {
             if streamingBinding != binding || streamingToken == nil {
@@ -164,6 +160,15 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             return streamingToken!
         }
         return try await mint(binding)
+    }
+
+    func prewarm() async throws {
+        if !ready {
+            if initialization == nil {
+                initialization = Task { try await initialize() }
+            }
+            try await initialization?.value
+        }
     }
 
     private func initialize() async throws {
