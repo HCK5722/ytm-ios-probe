@@ -1317,8 +1317,8 @@ private class BgutilTokenProvider(
         val started = TimeSource.Monotonic.markNow()
         val callIndex = calls++
         return try {
-            val player = requestToken(visitorData)
-            val streaming = requestToken(videoId)
+            val streaming = requestToken(visitorData, "streaming")
+            val player = requestToken(videoId, "player")
             val elapsedMs = started.elapsedNow().inWholeMilliseconds
             val valid = player.binding == visitorData && streaming.binding == videoId &&
                 player.token.isNotBlank() && streaming.token.isNotBlank() && player.token != streaming.token
@@ -1335,10 +1335,13 @@ private class BgutilTokenProvider(
 
     private var calls = 0
 
-    private suspend fun requestToken(binding: String): BoundToken {
+    private suspend fun requestToken(binding: String, tokenType: String): BoundToken {
         val response = client.post(endpoint) {
             contentType(ContentType.Application.Json)
-            setBody(buildJsonObject { put("content_binding", binding) })
+            setBody(buildJsonObject {
+                put("content_binding", binding)
+                put("token_type", tokenType)
+            })
         }
         if (response.status.value !in 200..299) throw IllegalStateException("bgutil_http_${response.status.value}")
         val json = Json.parseToJsonElement(response.bodyAsText()) as? JsonObject

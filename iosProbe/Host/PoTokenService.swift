@@ -84,8 +84,10 @@ final class PoTokenService: @unchecked Sendable {
         guard
             let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
             let binding = object["content_binding"] as? String,
+            let tokenType = object["token_type"] as? String,
             !binding.isEmpty,
-            binding.count <= 1024
+            binding.count <= 1024,
+            tokenType == "streaming" || tokenType == "player"
         else {
             reply(connection, status: 400, object: ["error": "invalid_request"])
             return
@@ -93,7 +95,7 @@ final class PoTokenService: @unchecked Sendable {
         Task { @MainActor in
             do {
                 if self.engine == nil { self.engine = PoTokenEngine() }
-                let token = try await self.engine!.token(for: binding)
+                let token = try await self.engine!.token(for: binding, type: tokenType)
                 self.reply(connection, status: 200, object: [
                     "poToken": token,
                     "contentBinding": binding,
@@ -121,6 +123,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     private var loaded = false
     private var ready = false
     private var initialization: Task<Void, Error>?
+    private var streamingBinding: String?
     private var streamingToken: String?
     private var navigationContinuation: CheckedContinuation<Void, Error>?
 
@@ -139,12 +142,13 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         initialization = nil
         ready = false
         loaded = false
+        streamingBinding = nil
         streamingToken = nil
         webView.stopLoading()
         webView.navigationDelegate = nil
     }
 
-    func token(for binding: String) async throws -> String {
+    func token(for binding: String, type: String) async throws -> String {
         if !ready {
             if initialization == nil {
                 initialization = Task { try await initialize() }
@@ -152,7 +156,13 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             try await initialization?.value
         }
         guard ready else { throw PoTokenError.notReady }
-        if binding == streamingBindingPlaceholder { return streamingToken ?? "" }
+        if type == "streaming" {
+            if streamingBinding != binding || streamingToken == nil {
+                streamingBinding = binding
+                streamingToken = try await mint(binding)
+            }
+            return streamingToken!
+        }
         return try await mint(binding)
     }
 
@@ -163,7 +173,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         let challenge = try parseChallenge(create)
         let challengeJSON = try jsonString(challenge)
         let botguard = try await evaluate("""
-        data = (challengeJSON);
+        data = \(challengeJSON);
         runBotGuard(data).then(function(result) {
           window.__webPoSignalOutput = result.webPoSignalOutput;
           return result.botguardResponse;
@@ -174,14 +184,14 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         guard let integrityArray = integrity as? [Any], let encoded = integrityArray.first as? String else { throw PoTokenError.integrity }
         let bytes = try decodeBase64URL(encoded)
         let byteLiteral = bytes.map(String.init).joined(separator: ",")
-        _ = try await evaluate("createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([(byteLiteral)])).then(function(){ return true; })")
+        _ = try await evaluate("createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([\(byteLiteral)])).then(function(){ return true; })")
         ready = true
         NSLog("PROBE_POT_SERVICE ready=1")
     }
 
     private func mint(_ identifier: String) async throws -> String {
         let idJSON = try jsonString(identifier)
-        let value = try await evaluate("obtainPoToken(new TextEncoder().encode((idJSON))).then(function(x){ return Array.from(x); })")
+        let value = try await evaluate("obtainPoToken(new TextEncoder().encode(\(idJSON))).then(function(x){ return Array.from(x); })")
         guard let numbers = value as? [NSNumber], !numbers.isEmpty else { throw PoTokenError.javascript }
         let bytes = numbers.map { UInt8(truncating: $0) }
         return Data(bytes).base64EncodedString()
