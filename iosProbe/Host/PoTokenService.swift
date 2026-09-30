@@ -287,10 +287,20 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         }
         guard let values = data, values.count > 5 else { throw PoTokenError.challengeShape }
         func firstString(_ value: Any?) -> String? {
-            guard let value else { return nil }
+            guard let value, !(value is NSNull) else { return nil }
             if let string = value as? String { return string }
+            if let string = value as? NSString { return String(string) }
             if let array = value as? [Any] {
-                return array.lazy.compactMap(firstString).first
+                for item in array {
+                    if let result = firstString(item) { return result }
+                }
+                return nil
+            }
+            if let array = value as? NSArray {
+                for item in array {
+                    if let result = firstString(item) { return result }
+                }
+                return nil
             }
             if let object = value as? [String: Any] {
                 let knownKeys = [
@@ -300,21 +310,36 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
                 for key in knownKeys {
                     if let result = firstString(object[key]) { return result }
                 }
-                return object.keys.sorted().lazy.compactMap { firstString(object[$0]) }.first
+                for key in object.keys.sorted() {
+                    if let result = firstString(object[key]) { return result }
+                }
+                return nil
+            }
+            if let object = value as? NSDictionary {
+                for key in [
+                    "privateDoNotAccessOrElseSafeScriptWrappedValue",
+                    "privateDoNotAccessOrElseTrustedResourceUrlWrappedValue",
+                ] {
+                    if let result = firstString(object[key]) { return result }
+                }
+                for key in object.allKeys.compactMap({ $0 as? String }).sorted() {
+                    if let result = firstString(object[key]) { return result }
+                }
             }
             return nil
         }
-        guard let safe = firstString(values[1]), let trusted = firstString(values[2]) else {
+        guard let safe = firstString(values[1]) else {
             throw PoTokenError.challengeFields(
                 safe: challengeShape(values[1]),
                 trusted: challengeShape(values[2]),
             )
         }
+        let trusted = firstString(values[2])
         var challenge: [String: Any] = [
             "messageId": values[0],
             "interpreterJavascript": [
                 "privateDoNotAccessOrElseSafeScriptWrappedValue": safe,
-                "privateDoNotAccessOrElseTrustedResourceUrlWrappedValue": trusted,
+                "privateDoNotAccessOrElseTrustedResourceUrlWrappedValue": trusted ?? NSNull(),
             ],
             "interpreterHash": values[3],
             "program": values[4],
