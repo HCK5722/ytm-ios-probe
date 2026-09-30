@@ -287,11 +287,28 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         }
         guard let values = data, values.count > 5 else { throw PoTokenError.challengeShape }
         func firstString(_ value: Any?) -> String? {
-            if let value = value as? String { return value }
-            return (value as? [Any])?.compactMap { $0 as? String }.first
+            guard let value else { return nil }
+            if let string = value as? String { return string }
+            if let array = value as? [Any] {
+                return array.lazy.compactMap(firstString).first
+            }
+            if let object = value as? [String: Any] {
+                let knownKeys = [
+                    "privateDoNotAccessOrElseSafeScriptWrappedValue",
+                    "privateDoNotAccessOrElseTrustedResourceUrlWrappedValue",
+                ]
+                for key in knownKeys {
+                    if let result = firstString(object[key]) { return result }
+                }
+                return object.keys.sorted().lazy.compactMap { firstString(object[$0]) }.first
+            }
+            return nil
         }
         guard let safe = firstString(values[1]), let trusted = firstString(values[2]) else {
-            throw PoTokenError.challengeFields
+            throw PoTokenError.challengeFields(
+                safe: challengeShape(values[1]),
+                trusted: challengeShape(values[2]),
+            )
         }
         var challenge: [String: Any] = [
             "messageId": values[0],
@@ -310,6 +327,24 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     private func jsonString(_ value: Any) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: value)
         return String(decoding: data, as: UTF8.self)
+    }
+
+    private func challengeShape(_ value: Any?, depth: Int = 0) -> String {
+        guard let value else { return "missing" }
+        if value is NSNull { return "null" }
+        if value is String { return "string" }
+        if let array = value as? [Any] {
+            guard depth < 3 else { return "array[\(array.count)]" }
+            let children = array.prefix(3).map { challengeShape($0, depth: depth + 1) }
+            return "array[\(array.count)](\(children.joined(separator: ",")))"
+        }
+        if let object = value as? [String: Any] {
+            guard depth < 3 else { return "object[\(object.count)]" }
+            let children = object.keys.sorted().prefix(3).compactMap { object[$0] }
+                .map { challengeShape($0, depth: depth + 1) }
+            return "object[\(object.count)](\(children.joined(separator: ",")))"
+        }
+        return "scalar"
     }
 
     private func decodeBase64URL(_ value: String) throws -> [UInt8] {
@@ -331,5 +366,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
 
 private enum PoTokenError: Error {
     case notReady, javascript, integrity, assets, navigation, http
-    case challengeResponse, challengeShape, challengeFields, unsupported
+    case challengeResponse, challengeShape
+    case challengeFields(safe: String, trusted: String)
+    case unsupported
 }
