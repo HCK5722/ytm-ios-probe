@@ -191,7 +191,14 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             if initialization == nil {
                 initialization = Task { try await initialize() }
             }
-            try await initialization?.value
+            do {
+                try await initialization?.value
+            } catch {
+                initialization = nil
+                ready = false
+                loaded = false
+                throw error
+            }
         }
     }
 
@@ -268,18 +275,25 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     }
 
     private func parseChallenge(_ raw: Any) throws -> [String: Any] {
-        guard let outer = raw as? [Any], let first = outer.first else { throw PoTokenError.challenge }
+        guard let outer = raw as? [Any], let first = outer.first else { throw PoTokenError.challengeResponse }
         var data: [Any]?
         if outer.count > 1, let encoded = outer[1] as? String, let decoded = decodeBase64URLBytes(encoded) {
             let shifted = Data(decoded.map { UInt8((Int($0) + 97) & 255) })
-            data = (try? JSONSerialization.jsonObject(with: shifted) as? [Any])?.first as? [Any]
+            // Create returns a scrambled JSON array containing the challenge
+            // fields directly. Do not unwrap its first field as another array.
+            data = try? JSONSerialization.jsonObject(with: shifted) as? [Any]
         } else {
             data = first as? [Any]
         }
-        guard let values = data, values.count > 5 else { throw PoTokenError.challenge }
-        func firstString(_ value: Any?) -> String? { (value as? [Any])?.compactMap { $0 as? String }.first }
-        guard let safe = firstString(values[1]), let trusted = firstString(values[2]) else { throw PoTokenError.challenge }
-        return [
+        guard let values = data, values.count > 5 else { throw PoTokenError.challengeShape }
+        func firstString(_ value: Any?) -> String? {
+            if let value = value as? String { return value }
+            return (value as? [Any])?.compactMap { $0 as? String }.first
+        }
+        guard let safe = firstString(values[1]), let trusted = firstString(values[2]) else {
+            throw PoTokenError.challengeFields
+        }
+        var challenge: [String: Any] = [
             "messageId": values[0],
             "interpreterJavascript": [
                 "privateDoNotAccessOrElseSafeScriptWrappedValue": safe,
@@ -289,6 +303,8 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             "program": values[4],
             "globalName": values[5],
         ]
+        if values.count > 7 { challenge["clientExperimentsStateBlob"] = values[7] }
+        return challenge
     }
 
     private func jsonString(_ value: Any) throws -> String {
@@ -313,4 +329,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     }
 }
 
-private enum PoTokenError: Error { case notReady, javascript, integrity, assets, navigation, http, challenge, unsupported }
+private enum PoTokenError: Error {
+    case notReady, javascript, integrity, assets, navigation, http
+    case challengeResponse, challengeShape, challengeFields, unsupported
+}
