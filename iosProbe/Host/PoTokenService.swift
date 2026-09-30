@@ -335,12 +335,13 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             )
         }
         let trusted = firstString(values[2])
+        let interpreterJavascript: [String: Any] = [
+            "privateDoNotAccessOrElseSafeScriptWrappedValue": safe,
+            "privateDoNotAccessOrElseTrustedResourceUrlWrappedValue": trusted ?? NSNull(),
+        ]
         var challenge: [String: Any] = [
             "messageId": values[0],
-            "interpreterJavascript": [
-                "privateDoNotAccessOrElseSafeScriptWrappedValue": safe,
-                "privateDoNotAccessOrElseTrustedResourceUrlWrappedValue": trusted ?? NSNull(),
-            ],
+            "interpreterJavascript": interpreterJavascript,
             "interpreterHash": values[3],
             "program": values[4],
             "globalName": values[5],
