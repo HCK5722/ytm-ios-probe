@@ -209,25 +209,57 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         let challenge = try parseChallenge(create)
         let challengeJSON = try jsonString(challenge)
         let botguard = try await evaluate("""
-        data = \(challengeJSON);
-        runBotGuard(data).then(function(result) {
-          window.__webPoSignalOutput = result.webPoSignalOutput;
-          return result.botguardResponse;
-        })
+        (async function() {
+          try {
+            data = \(challengeJSON);
+            var result = await runBotGuard(data);
+            window.__webPoSignalOutput = result.webPoSignalOutput;
+            return result.botguardResponse;
+          } catch (e) {
+            return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+          }
+        })()
         """)
+        if let error = javascriptMarker(botguard) {
+            throw PoTokenError.javascriptDetail(stage: "runBotGuard", detail: error)
+        }
         guard let botguardText = botguard as? String else { throw PoTokenError.javascript }
         let integrity = try await serviceRequest(url: "https://www.youtube.com/api/jnn/v1/GenerateIT", body: ["O43z0dpjhgX20SCx4KAo", botguardText])
         guard let integrityArray = integrity as? [Any], let encoded = integrityArray.first as? String else { throw PoTokenError.integrity }
         let bytes = try decodeBase64URL(encoded)
         let byteLiteral = bytes.map(String.init).joined(separator: ",")
-        _ = try await evaluate("createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([\(byteLiteral)])).then(function(){ return true; })")
+        let minter = try await evaluate("""
+        (async function() {
+          try {
+            await createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([\(byteLiteral)]));
+            return true;
+          } catch (e) {
+            return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+          }
+        })()
+        """)
+        if let error = javascriptMarker(minter) {
+            throw PoTokenError.javascriptDetail(stage: "createMinter", detail: error)
+        }
         ready = true
         NSLog("PROBE_POT_SERVICE ready=1")
     }
 
     private func mint(_ identifier: String) async throws -> String {
         let idJSON = try jsonString(identifier)
-        let value = try await evaluate("obtainPoToken(new TextEncoder().encode(\(idJSON))).then(function(x){ return Array.from(x); })")
+        let value = try await evaluate("""
+        (async function() {
+          try {
+            var x = await obtainPoToken(new TextEncoder().encode(\(idJSON)));
+            return Array.from(x);
+          } catch (e) {
+            return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+          }
+        })()
+        """)
+        if let error = javascriptMarker(value) {
+            throw PoTokenError.javascriptDetail(stage: "mint", detail: error)
+        }
         guard let numbers = value as? [NSNumber], !numbers.isEmpty else { throw PoTokenError.javascript }
         let bytes = numbers.map { UInt8(truncating: $0) }
         return Data(bytes).base64EncodedString()
@@ -355,6 +387,19 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private func javascriptMarker(_ value: Any) -> String? {
+        guard let object = value as? [String: Any],
+              let name = object["__probe_js_error"] as? String,
+              let message = object["__probe_js_message"] as? String
+        else { return nil }
+        let combined = "\(name):\(message)"
+        return combined
+            .replacingOccurrences(of: "https?://[^\\s]+", with: "url", options: .regularExpression)
+            .replacingOccurrences(of: "[A-Za-z0-9_-]{80,}", with: "long_value", options: .regularExpression)
+            .prefix(220)
+            .description
+    }
+
     private func challengeShape(_ value: Any?, depth: Int = 0) -> String {
         guard let value else { return "missing" }
         if value is NSNull { return "null" }
@@ -394,5 +439,6 @@ private enum PoTokenError: Error {
     case notReady, javascript, integrity, assets, navigation, http
     case challengeResponse, challengeShape
     case challengeFields(safe: String, trusted: String)
+    case javascriptDetail(stage: String, detail: String)
     case unsupported
 }
