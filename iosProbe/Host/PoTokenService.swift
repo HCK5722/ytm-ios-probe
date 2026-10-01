@@ -465,7 +465,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate, WKScriptMessa
     }
 
     private func jsonString(_ value: Any) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: value)
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
         return String(decoding: data, as: UTF8.self)
     }
 
