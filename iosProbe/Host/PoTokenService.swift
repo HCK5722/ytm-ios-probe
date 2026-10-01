@@ -209,16 +209,14 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         let challenge = try parseChallenge(create)
         let challengeJSON = try jsonString(challenge)
         let botguard = try await evaluate("""
-        (async function() {
-          try {
-            data = \(challengeJSON);
-            var result = await runBotGuard(data);
-            window.__webPoSignalOutput = result.webPoSignalOutput;
-            return result.botguardResponse;
-          } catch (e) {
-            return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
-          }
-        })()
+        try {
+          data = \(challengeJSON);
+          var result = await runBotGuard(data);
+          window.__webPoSignalOutput = result.webPoSignalOutput;
+          return result.botguardResponse;
+        } catch (e) {
+          return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+        }
         """)
         if let error = javascriptMarker(botguard) {
             throw PoTokenError.javascriptDetail(stage: "runBotGuard", detail: error)
@@ -229,17 +227,18 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         let bytes = try decodeBase64URL(encoded)
         let byteLiteral = bytes.map(String.init).joined(separator: ",")
         let minter = try await evaluate("""
-        (async function() {
-          try {
-            await createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([\(byteLiteral)]));
-            return true;
-          } catch (e) {
-            return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
-          }
-        })()
+        try {
+          await createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([\(byteLiteral)]));
+          return true;
+        } catch (e) {
+          return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+        }
         """)
         if let error = javascriptMarker(minter) {
             throw PoTokenError.javascriptDetail(stage: "createMinter", detail: error)
+        }
+        guard let minterReady = minter as? Bool, minterReady else {
+            throw PoTokenError.javascriptDetail(stage: "createMinter", detail: "empty_or_invalid_result")
         }
         ready = true
         NSLog("PROBE_POT_SERVICE ready=1")
@@ -248,14 +247,12 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     private func mint(_ identifier: String) async throws -> String {
         let idJSON = try jsonString(identifier)
         let value = try await evaluate("""
-        (async function() {
-          try {
-            var x = await obtainPoToken(new TextEncoder().encode(\(idJSON)));
-            return Array.from(x);
-          } catch (e) {
-            return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
-          }
-        })()
+        try {
+          var x = await obtainPoToken(new TextEncoder().encode(\(idJSON)));
+          return Array.from(x);
+        } catch (e) {
+          return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+        }
         """)
         if let error = javascriptMarker(value) {
             throw PoTokenError.javascriptDetail(stage: "mint", detail: error)
@@ -286,7 +283,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         loaded = true
     }
 
-    private func evaluate(_ script: String) async throws -> Any {
+    private func evaluate(_ script: String) async throws -> Any? {
         guard loaded else { throw PoTokenError.navigation }
         if #available(iOS 15.0, *) {
             return try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page)
@@ -387,7 +384,7 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func javascriptMarker(_ value: Any) -> String? {
+    private func javascriptMarker(_ value: Any?) -> String? {
         guard let object = value as? [String: Any],
               let name = object["__probe_js_error"] as? String,
               let message = object["__probe_js_message"] as? String
@@ -441,4 +438,22 @@ private enum PoTokenError: Error {
     case challengeFields(safe: String, trusted: String)
     case javascriptDetail(stage: String, detail: String)
     case unsupported
+}
+
+extension PoTokenError: CustomStringConvertible {
+    var description: String {
+        switch self {
+        case .notReady: return "not_ready"
+        case .javascript: return "javascript_invalid_result"
+        case .integrity: return "integrity_invalid_response"
+        case .assets: return "assets_missing"
+        case .navigation: return "webview_not_loaded"
+        case .http: return "botguard_http_failure"
+        case .challengeResponse: return "challenge_invalid_response"
+        case .challengeShape: return "challenge_invalid_shape"
+        case .challengeFields(let safe, let trusted): return "challenge_fields_safe_\(safe)_trusted_\(trusted)"
+        case .javascriptDetail(let stage, let detail): return "javascript_\(stage)_\(detail)"
+        case .unsupported: return "unsupported_os"
+        }
+    }
 }
