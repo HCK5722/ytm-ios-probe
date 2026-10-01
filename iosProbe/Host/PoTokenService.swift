@@ -213,7 +213,17 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
           data = \(challengeJSON);
           var result = await runBotGuard(data);
           window.__webPoSignalOutput = result.webPoSignalOutput;
-          return result.botguardResponse;
+          var response = result.botguardResponse;
+          if (response === null || typeof response === "undefined") {
+            return {"__probe_js_error": "BotGuardResponse", "__probe_js_message": "missing"};
+          }
+          if (typeof response !== "string") {
+            response = JSON.stringify(response);
+          }
+          if (typeof response !== "string") {
+            return {"__probe_js_error": "BotGuardResponse", "__probe_js_message": "not_serializable"};
+          }
+          return response;
         } catch (e) {
           return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
         }
@@ -221,7 +231,9 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         if let error = javascriptMarker(botguard) {
             throw PoTokenError.javascriptDetail(stage: "runBotGuard", detail: error)
         }
-        guard let botguardText = botguard as? String else { throw PoTokenError.javascript }
+        guard let botguardText = botguard as? String else {
+            throw PoTokenError.javascriptDetail(stage: "runBotGuardResult", detail: "bridge_\(bridgeShape(botguard))")
+        }
         let integrity = try await serviceRequest(url: "https://www.youtube.com/api/jnn/v1/GenerateIT", body: ["O43z0dpjhgX20SCx4KAo", botguardText])
         guard let integrityArray = integrity as? [Any], let encoded = integrityArray.first as? String else { throw PoTokenError.integrity }
         let bytes = try decodeBase64URL(encoded)
@@ -249,7 +261,11 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         let value = try await evaluate("""
         try {
           var x = await obtainPoToken(new TextEncoder().encode(\(idJSON)));
-          return Array.from(x);
+          if (!(x instanceof Uint8Array)) {
+            throw new Error("token_not_uint8array");
+          }
+          var binary = String.fromCharCode.apply(null, Array.from(x));
+          return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
         } catch (e) {
           return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
         }
@@ -257,12 +273,10 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         if let error = javascriptMarker(value) {
             throw PoTokenError.javascriptDetail(stage: "mint", detail: error)
         }
-        guard let numbers = value as? [NSNumber], !numbers.isEmpty else { throw PoTokenError.javascript }
-        let bytes = numbers.map { UInt8(truncating: $0) }
-        return Data(bytes).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
+        guard let token = value as? String, !token.isEmpty else {
+            throw PoTokenError.javascriptDetail(stage: "mintResult", detail: "bridge_\(bridgeShape(value))")
+        }
+        return token
     }
 
     private func loadPage() throws -> String {
@@ -395,6 +409,16 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             .replacingOccurrences(of: "[A-Za-z0-9_-]{80,}", with: "long_value", options: .regularExpression)
             .prefix(220)
             .description
+    }
+
+    private func bridgeShape(_ value: Any?) -> String {
+        guard let value else { return "nil" }
+        if value is NSNull { return "null" }
+        if let string = value as? String { return "string_len\(string.count)" }
+        if let array = value as? [Any] { return "array_\(array.count)" }
+        if let object = value as? [String: Any] { return "object_\(object.count)" }
+        return String(describing: type(of: value))
+            .replacingOccurrences(of: "[^A-Za-z0-9_<>]", with: "", options: .regularExpression)
     }
 
     private func challengeShape(_ value: Any?, depth: Int = 0) -> String {
