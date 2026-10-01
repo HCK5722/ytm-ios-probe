@@ -143,7 +143,7 @@ final class PoTokenService: @unchecked Sendable {
 }
 
 @MainActor
-private final class PoTokenEngine: NSObject, WKNavigationDelegate {
+private final class PoTokenEngine: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let webView: WKWebView
     private var loaded = false
     private var ready = false
@@ -151,11 +151,14 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
     private var streamingBinding: String?
     private var streamingToken: String?
     private var navigationContinuation: CheckedContinuation<Void, Error>?
+    private var evaluationContinuation: CheckedContinuation<Any, Error>?
+    private var evaluationRequestID: String?
 
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        configuration.userContentController.add(self, name: "ytmPoToken")
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self
@@ -169,8 +172,14 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         loaded = false
         streamingBinding = nil
         streamingToken = nil
+        if let continuation = evaluationContinuation {
+            evaluationContinuation = nil
+            evaluationRequestID = nil
+            continuation.resume(throwing: PoTokenError.javascriptDetail(stage: "webViewClosed", detail: "cancelled"))
+        }
         webView.stopLoading()
         webView.navigationDelegate = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "ytmPoToken")
     }
 
     func token(for binding: String, type: String) async throws -> String {
@@ -223,10 +232,11 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
           if (typeof response !== "string") {
             return {"__probe_js_error": "BotGuardResponse", "__probe_js_message": "not_serializable"};
           }
-          return response;
+          __probePost({"payload": response});
         } catch (e) {
-          return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+          __probePost({"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)});
         }
+        return true;
         """)
         if let error = javascriptMarker(botguard) {
             throw PoTokenError.javascriptDetail(stage: "runBotGuard", detail: error)
@@ -241,10 +251,11 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
         let minter = try await evaluate("""
         try {
           await createPoTokenMinter(window.__webPoSignalOutput, new Uint8Array([\(byteLiteral)]));
-          return true;
+          __probePost({"payload": true});
         } catch (e) {
-          return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+          __probePost({"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)});
         }
+        return true;
         """)
         if let error = javascriptMarker(minter) {
             throw PoTokenError.javascriptDetail(stage: "createMinter", detail: error)
@@ -265,10 +276,12 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
             throw new Error("token_not_uint8array");
           }
           var binary = String.fromCharCode.apply(null, Array.from(x));
-          return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+          var token = btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+          __probePost({"payload": token});
         } catch (e) {
-          return {"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)};
+          __probePost({"__probe_js_error": String(e && e.name || "Error"), "__probe_js_message": String(e && e.message || e).slice(0, 180)});
         }
+        return true;
         """)
         if let error = javascriptMarker(value) {
             throw PoTokenError.javascriptDetail(stage: "mint", detail: error)
@@ -299,10 +312,68 @@ private final class PoTokenEngine: NSObject, WKNavigationDelegate {
 
     private func evaluate(_ script: String) async throws -> Any? {
         guard loaded else { throw PoTokenError.navigation }
+        guard evaluationContinuation == nil else {
+            throw PoTokenError.javascriptDetail(stage: "webViewEvaluation", detail: "busy")
+        }
         if #available(iOS 15.0, *) {
-            return try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page)
+            let requestID = UUID().uuidString
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any, Error>) in
+                evaluationContinuation = continuation
+                evaluationRequestID = requestID
+                let wrappedScript = """
+                const __probeRequestId = "\(requestID)";
+                const __probePost = function(result) {
+                  window.webkit.messageHandlers.ytmPoToken.postMessage(
+                    Object.assign({requestId: __probeRequestId}, result)
+                  );
+                };
+                \(script)
+                """
+                Task { @MainActor in
+                    do {
+                        _ = try await webView.callAsyncJavaScript(wrappedScript, arguments: [:], in: nil, in: .page)
+                        try? await Task.sleep(nanoseconds: 10_000_000_000)
+                        if evaluationRequestID == requestID, let pending = evaluationContinuation {
+                            evaluationContinuation = nil
+                            evaluationRequestID = nil
+                            pending.resume(throwing: PoTokenError.javascriptDetail(stage: "webViewEvaluation", detail: "message_missing"))
+                        }
+                    } catch {
+                        guard evaluationRequestID == requestID, let pending = evaluationContinuation else { return }
+                        evaluationContinuation = nil
+                        evaluationRequestID = nil
+                        pending.resume(throwing: error)
+                    }
+                }
+            }
         }
         throw PoTokenError.unsupported
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.name == "ytmPoToken",
+              let requestID = evaluationRequestID,
+              let continuation = evaluationContinuation,
+              let response = message.body as? [String: Any],
+              response["requestId"] as? String == requestID
+        else { return }
+
+        evaluationContinuation = nil
+        evaluationRequestID = nil
+        if let name = response["__probe_js_error"] as? String,
+           let detail = response["__probe_js_message"] as? String {
+            continuation.resume(returning: [
+                "__probe_js_error": name,
+                "__probe_js_message": detail,
+            ])
+        } else if let payload = response["payload"] {
+            continuation.resume(returning: payload)
+        } else {
+            continuation.resume(throwing: PoTokenError.javascriptDetail(stage: "webViewMessage", detail: "payload_missing"))
+        }
     }
 
     private func serviceRequest(url: String, body: [Any]) async throws -> Any {
