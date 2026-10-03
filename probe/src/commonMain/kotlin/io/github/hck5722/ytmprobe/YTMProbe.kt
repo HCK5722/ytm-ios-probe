@@ -124,7 +124,7 @@ public class YTMProbe {
         cookie: String? = null,
         tokenGroup: String = "baseline",
         tokenServiceUrl: String = "http://127.0.0.1:4416/get_pot",
-        playbackClientOverrideId: String? = "VISIONOS_SABR",
+        playbackClientOverrideId: String? = null,
         streamSink: AudioStreamSink,
     ): StreamingAudioHandle? {
         sabrFirstPlayerElapsedMs = -1L
@@ -138,11 +138,11 @@ public class YTMProbe {
         }
         val client = bundle.client
         val innerTube = bundle.innerTube
-        // The baseline path must use the same extractor as the successful
-        // complete-SABR fallback. The dedicated streaming extractor carries
-        // the iOS SABR fallback strategy and can re-enter the attestation-gated
-        // IOS client even when the working baseline response is VISIONOS SABR.
-        val extractor = if (playbackClientOverrideId == null && tokenGroup != "baseline") {
+        // The streaming extractor carries the probe-only IOS_SABR strategy
+        // that accepts the observed no-token SABR response. The ordinary
+        // extractor re-enters automatic candidates and can spend seconds on
+        // MWEB/VISIONOS/attestation branches before reaching the same stream.
+        val extractor = if (playbackClientOverrideId == null) {
             bundle.streamingExtractor
         } else {
             bundle.extractor

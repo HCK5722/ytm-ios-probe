@@ -127,8 +127,7 @@ public fun main(args: Array<String>) {
                 tokenGroup = if (options.providers == "EXTERNAL") "2a" else "baseline",
                 tokenServiceUrl = options.potUrl,
                 playbackClientOverrideId = options.clientOverride
-                    ?.takeUnless { it.equals("AUTO", ignoreCase = true) }
-                    ?: "VISIONOS_SABR_RAW",
+                    ?.takeUnless { it.equals("AUTO", ignoreCase = true) },
                 streamSink = sink,
             )
         }

@@ -360,9 +360,9 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
-            // The verified working iPhone route is the baseline VISIONOS SABR
-            // stream. The iOS attestation route resolves quickly but is not
-            // accepted by SABR on this network and only adds a failed retry.
+            // Use the formal IOS_SABR probe route. It resolves quickly and
+            // avoids the rejected raw VISIONOS request; the stream diagnostics
+            // still expose any later attestation failure.
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in
@@ -376,10 +376,10 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                // Use the proven base VISIONOS player identity directly. The
-                // raw path builds the SABR bootstrap without probing MWEB or
-                // the attestation-gated IOS client first.
-                playbackClientOverrideId: "VISIONOS_SABR_RAW",
+                // Use the formal probe streaming strategy. It selects the
+                // observed IOS_SABR response without issuing a raw player
+                // request or entering the rejected VISIONOS path.
+                playbackClientOverrideId: nil,
                 streamSink: sink,
             )
             if handle == nil {
