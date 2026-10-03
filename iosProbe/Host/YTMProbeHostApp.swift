@@ -376,10 +376,10 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                // Let innertubex use its formal automatic SABR selection. A
-                // forced VISIONOS_SABR override is accepted on desktop but is
-                // rejected by YouTube on this iPhone, causing a wasted retry.
-                playbackClientOverrideId: nil,
+                // Use the proven base VISIONOS player identity directly. The
+                // raw path builds the SABR bootstrap without probing MWEB or
+                // the attestation-gated IOS client first.
+                playbackClientOverrideId: "VISIONOS_SABR_RAW",
                 streamSink: sink,
             )
             if handle == nil {
