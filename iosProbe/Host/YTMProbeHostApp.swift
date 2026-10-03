@@ -113,7 +113,7 @@ final class ProbeModel: ObservableObject {
                 // player config/cipher caches used by SABR extraction.
                 _ = try await playbackProbe.prewarmPlayback(
                     cookie: nil,
-                    tokenGroup: "ios-external",
+                    tokenGroup: "baseline",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
                 )
                 // Direct-player extraction needs visitor data as well as the
@@ -121,7 +121,7 @@ final class ProbeModel: ObservableObject {
                 // idle so the first cold tap starts with a ready session.
                 _ = try? await playbackProbe.prepareFastPlayback(
                     cookie: nil,
-                    tokenGroup: "ios-external",
+                    tokenGroup: "baseline",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot"
                 )
             } catch {
@@ -360,9 +360,9 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
-            // Current iPhone measurements show this track is SABR-only. Start
-            // the verified single-client SABR path immediately; ordinary
-            // direct probing remains a fallback only after SABR fails.
+            // The verified working iPhone route is the baseline VISIONOS SABR
+            // stream. The iOS attestation route resolves quickly but is not
+            // accepted by SABR on this network and only adds a failed retry.
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in
@@ -374,7 +374,7 @@ final class ProbeModel: ObservableObject {
             let handle = try await playbackProbe.startStreaming(
                 videoId: item.id,
                 cookie: nil,
-                tokenGroup: "ios-external",
+                tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
                 // Let innertubex use its formal automatic SABR selection. A
                 // forced VISIONOS_SABR override is accepted on desktop but is
@@ -453,8 +453,6 @@ final class ProbeModel: ObservableObject {
                     failureDetail = streamFailure
                     verdict = "PROBE_PLAY=FAIL reason=sabr_attestation"
                 }
-                let fallback = await fetchDirectFallback(for: item, updateUI: updateUI)
-                if let fallback { return fallback }
                 return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
             }
             guard snapshot.available > 0, !snapshot.path.isEmpty else {
@@ -466,8 +464,6 @@ final class ProbeModel: ObservableObject {
                         .joined(separator: "\n")
                     verdict = "PROBE_PLAY=FAIL reason=sabr_initial_segment"
                 }
-                let fallback = await fetchDirectFallback(for: item, updateUI: updateUI)
-                if let fallback { return fallback }
                 return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
             }
             return PreparedAudio(
