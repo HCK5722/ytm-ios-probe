@@ -1351,7 +1351,7 @@ private class BgutilTokenProvider(
             val streaming = requestToken(visitorData, "streaming")
             val player = requestToken(videoId, "player")
             val elapsedMs = started.elapsedNow().inWholeMilliseconds
-            val valid = player.binding == visitorData && streaming.binding == videoId &&
+            val valid = streaming.binding == visitorData && player.binding == videoId &&
                 player.token.isNotBlank() && streaming.token.isNotBlank() && player.token != streaming.token
             logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
             if (!valid) return null
