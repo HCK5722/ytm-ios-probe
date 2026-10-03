@@ -772,9 +772,15 @@ public class YTMProbe {
      * actually invoked and the resulting request is accepted by YouTube.
      */
     private object IosSabrTokenFallbackStrategy : ClientFallbackStrategy {
-        private val manifest = requireNotNull(
+        private val catalogManifest = requireNotNull(
             PlaybackClientCatalog.findManifest("IOS_SABR")
         ) { "IOS_SABR manifest is missing from innertubex catalog" }
+        private val manifest = catalogManifest.copy(
+            // The first iOS player response is already PLAYABLE. Keep the
+            // video-bound GVS token requirement, but let innertubex reuse
+            // that response instead of issuing a second player request.
+            poTokens = catalogManifest.poTokens.copy(player = PoTokenRule())
+        )
 
         override fun resolveClients(hints: ContentHints): List<YouTubeClient> =
             listOf(YouTubeClient.IOS_SABR)
@@ -1355,7 +1361,11 @@ private class BgutilTokenProvider(
                 player.token.isNotBlank() && streaming.token.isNotBlank() && player.token != streaming.token
             logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
             if (!valid) return null
-            PoTokenResult(player.token, streaming.token, visitorData)
+            // PoTokenResult fields describe the binding used by the library,
+            // not the token_type labels used by the local token service:
+            // playerRequestToken is visitor-bound and streamingDataToken is
+            // video-bound.
+            PoTokenResult(streaming.token, player.token, visitorData)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
