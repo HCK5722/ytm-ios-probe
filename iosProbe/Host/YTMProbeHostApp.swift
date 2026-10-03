@@ -413,16 +413,23 @@ final class ProbeModel: ObservableObject {
                 startSabrDiagnosticsPolling(streamState)
             }
             let deadline = Date().addingTimeInterval(12)
+            var firstBytesAt: Date?
             while Date() < deadline {
                 let snapshot = streamState.snapshot()
-                // AVPlayer only needs the init atom and the first media bytes
-                // to begin decoding. Waiting for 256 KiB made startup depend
-                // on a large SABR download and was the dominant cold-start
-                // delay on iOS.
-                // The MP4 init atom plus the first AAC fragment is normally well
-                // below 32 KiB. Starting AVPlayer as soon as 8 KiB is available
-                // avoids waiting for an unnecessarily large prefix.
-                if snapshot.available >= 8 * 1024 || snapshot.completed { break }
+                // The first SABR response can contain a valid init atom while
+                // the next response later rejects the stream. Do not hand that
+                // partial file to AVPlayer as a false "ready" stream.
+                if snapshot.failure != nil || snapshot.completed { break }
+                if snapshot.available >= 8 * 1024 {
+                    firstBytesAt = firstBytesAt ?? Date()
+                    // A healthy stream normally receives its next response
+                    // quickly. Keep the gate bounded so cold start remains
+                    // well below the 2-second target.
+                    if snapshot.responseCount >= 2 ||
+                        Date().timeIntervalSince(firstBytesAt!) >= 0.35 {
+                        break
+                    }
+                }
                 if Task.isCancelled { handle.close(); return nil }
                 try await Task.sleep(for: .milliseconds(50))
             }
@@ -436,7 +443,19 @@ final class ProbeModel: ObservableObject {
                 let firstChunkMs = snapshot.firstChunkMs.map { String($0) } ?? "pending"
                 let firstChunkIsInit = snapshot.firstChunkInitialization.map { String($0) } ?? "pending"
                 let failureCategory = snapshot.firstResponseFailureCategory.isEmpty ? "none" : snapshot.firstResponseFailureCategory
-                sabrDiagnostics = "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory)"
+                let streamFailure = snapshot.failure ?? "none"
+                sabrDiagnostics = "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory) streamFailure=\(streamFailure)"
+            }
+            if let streamFailure = snapshot.failure {
+                handle.close()
+                if updateUI {
+                    state = "SABR 认证失败：\(item.title)"
+                    failureDetail = streamFailure
+                    verdict = "PROBE_PLAY=FAIL reason=sabr_attestation"
+                }
+                let fallback = await fetchDirectFallback(for: item, updateUI: updateUI)
+                if let fallback { return fallback }
+                return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
             }
             guard snapshot.available > 0, !snapshot.path.isEmpty else {
                 handle.close()
