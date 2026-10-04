@@ -366,7 +366,7 @@ final class ProbeModel: ObservableObject {
             // start budget on the current server response. Try it before the
             // token-backed extractor, whose six-client chain can take 5+ seconds
             // before returning the known attestation failure.
-            strategyDiagnostics = "RAW_FAST:starting"
+            strategyDiagnostics = "RAW_FAST:v3:starting"
             let rawMatrixResult = await fetchVisionosStreamingFallback(for: item, updateUI: updateUI)
             if let rawMatrixResult {
                 return rawMatrixResult
@@ -397,7 +397,7 @@ final class ProbeModel: ObservableObject {
             if handle == nil {
                 let primaryFailure = playbackProbe.lastStreamingFailure
                 if updateUI {
-                    strategyDiagnostics = "IOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? "no_handle" : primaryFailure)"
+                    strategyDiagnostics += "\nIOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? "no_handle" : primaryFailure)"
                 }
                 if updateUI {
                     let streamFailure = playbackProbe.lastStreamingFailure
@@ -477,7 +477,7 @@ final class ProbeModel: ObservableObject {
                     state = "SABR 认证失败：\(item.title)"
                     failureDetail = streamFailure
                     verdict = "PROBE_PLAY=FAIL reason=sabr_attestation"
-                    strategyDiagnostics = "IOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? streamFailure : primaryFailure)"
+                    strategyDiagnostics += "\nIOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? streamFailure : primaryFailure)"
                 }
                 handle.close()
                 let noTokenResult = await diagnoseNoTokenSabr(for: item)

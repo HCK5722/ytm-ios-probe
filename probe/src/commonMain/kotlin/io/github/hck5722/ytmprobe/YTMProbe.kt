@@ -85,6 +85,7 @@ public class YTMProbe {
         val playerClient: YouTubeClient,
         val bootstrapClient: YouTubeClient,
         val label: String,
+        val timeoutMs: Long,
     )
 
     private val playbackBundleMutex = Mutex()
@@ -164,10 +165,10 @@ public class YTMProbe {
                 // seconds on iOS before YouTube returns its playability error. That
                 // delay is longer than the complete SABR fallback itself, so bound
                 // only this speculative probe and hand control back immediately.
-                withTimeoutOrNull(RAW_SABR_PROBE_TIMEOUT_MS) {
+                withTimeoutOrNull(rawSabrSpec.timeoutMs) {
                     extractRawSabr(innerTube, videoId, rawSabrSpec)
                 } ?: run {
-                    lastStreamingFailure = "TimeoutCancellationException: raw_${rawSabrSpec.label}_timeout_${RAW_SABR_PROBE_TIMEOUT_MS}ms"
+                    lastStreamingFailure = "TimeoutCancellationException: raw_${rawSabrSpec.label}_timeout_${rawSabrSpec.timeoutMs}ms"
                     null
                 }
             } else {
@@ -813,6 +814,7 @@ public class YTMProbe {
             playerClient = YouTubeClient.IOS,
             bootstrapClient = YouTubeClient.IOS_SABR,
             label = "ios",
+            timeoutMs = 1_000L,
         )
         "IPADOS_SABR_RAW", "IPADOS_RAW" -> RawSabrSpec(
             playerClient = YouTubeClient.IPADOS,
@@ -821,6 +823,7 @@ public class YTMProbe {
                 useSabr = true,
             ),
             label = "ipados",
+            timeoutMs = 450L,
         )
         "VISIONOS_0_1_SABR_RAW", "VISIONOS_0_1_RAW" -> RawSabrSpec(
             playerClient = YouTubeClient.VISIONOS_0_1,
@@ -829,11 +832,13 @@ public class YTMProbe {
                 useSabr = true,
             ),
             label = "visionos_0_1",
+            timeoutMs = 450L,
         )
         "VISIONOS_SABR_RAW", "VISIONOS_RAW", "VISIONOS_SABR" -> RawSabrSpec(
             playerClient = YouTubeClient.VISIONOS,
             bootstrapClient = YouTubeClient.VISIONOS_SABR,
             label = "visionos",
+            timeoutMs = 450L,
         )
         else -> null
     }
@@ -927,7 +932,6 @@ public class YTMProbe {
 
     private companion object {
         private const val MAX_RESPONSE_BYTES: Int = 8 * 1024 * 1024
-        private const val RAW_SABR_PROBE_TIMEOUT_MS: Long = 1_500L
         private val SAFE_LOG_VALUE = Regex("[A-Za-z0-9_.-]{1,80}")
         private val TOKEN_DIAGNOSTIC_EVENTS =
             setOf(
