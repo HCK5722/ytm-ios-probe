@@ -207,6 +207,8 @@ public class YTMProbe {
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
+                    val failure = "${error::class.simpleName ?: "SabrProtocolException"}:${sanitizeFailureMessage(error.message).orEmpty()}"
+                    lastStreamingFailure = failure
                     streamSink.onStreamFailed(error::class.simpleName ?: "SabrProtocolException", sanitizeFailureMessage(error.message).orEmpty())
                 } finally {
                     if (!useCachedPlaybackBundle) {
@@ -1365,11 +1367,12 @@ private class BgutilTokenProvider(
                 player.token.isNotBlank() && streaming.token.isNotBlank() && player.token != streaming.token
             logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
             if (!valid) return null
-            // PoTokenResult fields describe the binding used by the library,
-            // not the token_type labels used by the local token service:
-            // playerRequestToken is visitor-bound and streamingDataToken is
-            // video-bound.
-            PoTokenResult(streaming.token, player.token, visitorData)
+            // The library names these fields by their destination, not by the
+            // local service request label: the video-bound token belongs to
+            // playerRequestToken, while the visitor-bound token belongs to
+            // streamingDataToken. Reversing them makes the service report
+            // success but causes SABR to reject the subsequent stream.
+            PoTokenResult(player.token, streaming.token, visitorData)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {

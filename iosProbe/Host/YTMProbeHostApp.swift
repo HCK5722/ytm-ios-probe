@@ -38,6 +38,7 @@ final class ProbeModel: ObservableObject {
     @Published var tapToAudioMs = "-"
     @Published var sabrDiagnostics = "-"
     @Published var poTokenDiagnostics = "-"
+    @Published var strategyDiagnostics = "-"
 
     private struct PreparedAudio {
         let data: Data?
@@ -201,6 +202,7 @@ final class ProbeModel: ObservableObject {
         tapToReadyMs = "-"
         tapToAudioMs = "-"
         sabrDiagnostics = "-"
+        strategyDiagnostics = "-"
         failureDetail = ""
         state = "准备：\(items[index].title)"
         verdict = "PROBE_PLAY=RUNNING"
@@ -360,9 +362,9 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
-            // Use the formal IOS_SABR probe route. It resolves quickly and
-            // avoids the rejected raw VISIONOS request; the stream diagnostics
-            // still expose any later attestation failure.
+            // Run the fast, token-backed IOS_SABR route first. Every fallback
+            // appends its own result to the on-screen strategy matrix.
+            strategyDiagnostics = "IOS_SABR_PO:starting"
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in
@@ -383,6 +385,10 @@ final class ProbeModel: ObservableObject {
                 streamSink: sink,
             )
             if handle == nil {
+                let primaryFailure = playbackProbe.lastStreamingFailure
+                if updateUI {
+                    strategyDiagnostics = "IOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? "no_handle" : primaryFailure)"
+                }
                 if updateUI {
                     let streamFailure = playbackProbe.lastStreamingFailure
                         .replacingOccurrences(of: "\\n", with: "_")
@@ -390,6 +396,14 @@ final class ProbeModel: ObservableObject {
                         .prefix(240)
                     sabrDiagnostics = "streamFailure=\(streamFailure.isEmpty ? "unknown" : String(streamFailure)) fallback=starting"
                 }
+                let noTokenResult = await diagnoseNoTokenSabr(for: item)
+                if updateUI { strategyDiagnostics += "\n\(noTokenResult)" }
+                let directFallback = await fetchDirectFallback(for: item, updateUI: updateUI)
+                if let directFallback {
+                    if updateUI { strategyDiagnostics += "\nDIRECT:PASS" }
+                    return directFallback
+                }
+                if updateUI { strategyDiagnostics += "\nDIRECT:FAIL" }
                 let completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
                 if updateUI {
                     let streamFailure = playbackProbe.lastStreamingFailure
@@ -398,6 +412,7 @@ final class ProbeModel: ObservableObject {
                         .prefix(240)
                     let fallbackState = completedFallback == nil ? "failed" : "complete_sabr"
                     sabrDiagnostics = "streamFailure=\(streamFailure.isEmpty ? "unknown" : String(streamFailure)) fallback=\(fallbackState)"
+                    strategyDiagnostics += "\nVISIONOS_COMPLETE:\(completedFallback == nil ? "FAIL" : "PASS")"
                 }
                 if completedFallback == nil, updateUI {
                     state = "取流失败：\(item.title)"
@@ -447,13 +462,25 @@ final class ProbeModel: ObservableObject {
                 sabrDiagnostics = "playerResolveMs=\(resolveMs) firstResponseMs=\(responseMs) httpStatus=\(responseStatus) segments=\(segments) mediaBytes=\(mediaBytes) initReceived=\(snapshot.firstResponseInitialization) firstChunkMs=\(firstChunkMs) firstChunkIsInit=\(firstChunkIsInit) failureCategory=\(failureCategory) streamFailure=\(streamFailure)"
             }
             if let streamFailure = snapshot.failure {
-                handle.close()
+                let primaryFailure = playbackProbe.lastStreamingFailure
                 if updateUI {
                     state = "SABR 认证失败：\(item.title)"
                     failureDetail = streamFailure
                     verdict = "PROBE_PLAY=FAIL reason=sabr_attestation"
+                    strategyDiagnostics = "IOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? streamFailure : primaryFailure)"
                 }
-                return await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                handle.close()
+                let noTokenResult = await diagnoseNoTokenSabr(for: item)
+                if updateUI { strategyDiagnostics += "\n\(noTokenResult)" }
+                let directFallback = await fetchDirectFallback(for: item, updateUI: updateUI)
+                if let directFallback {
+                    if updateUI { strategyDiagnostics += "\nDIRECT:PASS" }
+                    return directFallback
+                }
+                if updateUI { strategyDiagnostics += "\nDIRECT:FAIL" }
+                let completedFallback = await fetchCompleteSabrFallback(for: item, updateUI: updateUI)
+                if updateUI { strategyDiagnostics += "\nVISIONOS_COMPLETE:\(completedFallback == nil ? "FAIL" : "PASS")" }
+                return completedFallback
             }
             guard snapshot.available > 0, !snapshot.path.isEmpty else {
                 handle.close()
@@ -486,6 +513,34 @@ final class ProbeModel: ObservableObject {
                 verdict = "PROBE_PLAY=FAIL reason=stream_exception"
             }
             return nil
+        }
+    }
+
+    private func diagnoseNoTokenSabr(for item: ItemDTO) async -> String {
+        let state = StreamingAudioState()
+        let sink = StreamingAudioSink(state: state)
+        do {
+            let handle = try await playbackProbe.startStreaming(
+                videoId: item.id,
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                playbackClientOverrideId: nil,
+                streamSink: sink,
+            )
+            guard let handle else {
+                let failure = playbackProbe.lastStreamingFailure
+                return "IOS_SABR_NOPO:FAIL \(failure.isEmpty ? "no_handle" : failure)"
+            }
+            try? await Task.sleep(for: .milliseconds(650))
+            let snapshot = state.snapshot()
+            handle.close()
+            if let failure = snapshot.failure {
+                return "IOS_SABR_NOPO:FAIL \(failure)"
+            }
+            return "IOS_SABR_NOPO:PREFIX bytes=\(snapshot.available) client=\(handle.client) profile=\(handle.profile)"
+        } catch {
+            return "IOS_SABR_NOPO:EXCEPTION \((error as NSError).domain):\((error as NSError).code)"
         }
     }
 
@@ -965,6 +1020,7 @@ struct ProbeScreen: View {
                 row("点击到 ready", model.tapToReadyMs)
                 row("点击到出声", model.tapToAudioMs)
                 row("本地 PoToken", model.poTokenDiagnostics)
+                row("播放方案诊断", model.strategyDiagnostics)
                 row("SABR 首响诊断", model.sabrDiagnostics)
                 row("currentTime", model.currentTime)
                 row("状态", model.state)
