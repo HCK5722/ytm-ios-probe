@@ -79,6 +79,7 @@ public class YTMProbe {
         val streamingExtractor: InnerTubeExtractor,
         val configParser: YtConfigParser,
         val cipherService: YouTubeCipherService,
+        val tokenProvider: TokenProvider?,
     )
 
     private data class RawSabrSpec(
@@ -166,7 +167,7 @@ public class YTMProbe {
                 // delay is longer than the complete SABR fallback itself, so bound
                 // only this speculative probe and hand control back immediately.
                 withTimeoutOrNull(rawSabrSpec.timeoutMs) {
-                    extractRawSabr(innerTube, videoId, rawSabrSpec)
+                    extractRawSabr(innerTube, videoId, rawSabrSpec, bundle.tokenProvider)
                 } ?: run {
                     lastStreamingFailure = "TimeoutCancellationException: raw_${rawSabrSpec.label}_timeout_${rawSabrSpec.timeoutMs}ms"
                     null
@@ -213,7 +214,10 @@ public class YTMProbe {
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
-                    val failure = "${error::class.simpleName ?: "SabrProtocolException"}:${sanitizeFailureMessage(error.message).orEmpty()}"
+                    val failure =
+                        "${error::class.simpleName ?: "SabrProtocolException"}:${sanitizeFailureMessage(error.message).orEmpty()}" +
+                            ":sabrPoToken=${if (bootstrap.poToken == null) "missing" else "present"}" +
+                            ":sabrClient=${bootstrap.clientName}"
                     lastStreamingFailure = failure
                     streamSink.onStreamFailed(error::class.simpleName ?: "SabrProtocolException", sanitizeFailureMessage(error.message).orEmpty())
                 } finally {
@@ -367,7 +371,7 @@ public class YTMProbe {
                 try {
                     val rawSabrSpec = if (forceSabr) rawSabrSpec(playbackClientOverrideId) else null
                     val candidateStream = if (rawSabrSpec != null) {
-                        extractRawSabr(innerTube, candidate, rawSabrSpec)
+                        extractRawSabr(innerTube, candidate, rawSabrSpec, bundle.tokenProvider)
                     } else if (directPlayerFastPath && !forceSabr) {
                         val directStartedAt = TimeSource.Monotonic.markNow()
                         val directHints = ContentHints(
@@ -734,7 +738,7 @@ public class YTMProbe {
                 extractor.prewarm()
                 streamingExtractor.prewarm()
             }
-            return PlaybackBundle(client, innerTube, extractor, streamingExtractor, configParser, cipher)
+            return PlaybackBundle(client, innerTube, extractor, streamingExtractor, configParser, cipher, tokenProvider)
         } catch (error: Throwable) {
             innerTube.close()
             client.close()
@@ -848,12 +852,23 @@ public class YTMProbe {
         innerTube: InnerTube,
         videoId: String,
         spec: RawSabrSpec,
+        tokenProvider: TokenProvider?,
     ): com.metrolist.innertubex.extraction.ExtractedStream {
         fun fail(reason: String): Nothing = error("raw_${spec.label}_sabr:$reason")
-        val visitorData = innerTube.sessionSnapshot().visitorData ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
+        val visitorData = innerTube.sessionSnapshot().visitorData
+            ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
+            ?: fail("missing_visitor_data")
+        val poTokenResult = tokenProvider?.let { provider ->
+            provider.getPoToken(
+                videoId = videoId,
+                visitorData = visitorData,
+                cookie = innerTube.sessionSnapshot().cookie,
+            )
+        }
         val response = innerTube.player(
             client = spec.playerClient,
             videoId = videoId,
+            poToken = poTokenResult?.playerRequestToken,
             requestVisitorData = visitorData,
         )
         if (!response.status.isSuccess()) fail("http_${response.status.value}")
@@ -898,6 +913,7 @@ public class YTMProbe {
             playerResponse.toSabrBootstrap(
                 client = spec.bootstrapClient,
                 audioFormat = audioFormat,
+                poToken = poTokenResult?.streamingDataToken,
                 videoFormat = videoFormat,
             )
         }.getOrElse { fail("bootstrap_${it::class.simpleName ?: "invalid"}") }
@@ -914,7 +930,7 @@ public class YTMProbe {
             bitrate = audioFormat.bitrate,
             sampleRate = audioFormat.audioSampleRate,
             clientName = spec.playerClient.clientName,
-            profileId = "${spec.label.uppercase()}_SABR__raw",
+            profileId = "${spec.label.uppercase()}_SABR__raw_${if (poTokenResult?.streamingDataToken.isNullOrBlank()) "nopo" else "po"}",
             requireBoundedRange = false,
             rangeChunkSizeBytes = 1_048_576L,
             sabrBootstrap = bootstrap,
@@ -1134,6 +1150,11 @@ private suspend fun extractDirectPlayerAudio(
         YouTubeClient.IOS,
         YouTubeClient.IPADOS,
         YouTubeClient.MWEB,
+        YouTubeClient.WEB,
+        YouTubeClient.WEB_SAFARI,
+        YouTubeClient.WEB_EMBEDDED_PLAYER,
+        YouTubeClient.TVHTML5,
+        YouTubeClient.ANDROID,
     ).let { clients ->
         val preferred = clients.filter { it.clientName == preferredClientId }
         preferred + clients.filterNot { it.clientName == preferredClientId }
@@ -1206,9 +1227,10 @@ private suspend fun extractDirectPlayerAudioForClient(
         val reason = playerResponse.playabilityStatus.reason.orEmpty().replace(Regex("[^A-Za-z0-9 _-]"), "").replace(' ', '_').take(80)
         return DirectPlayerExtraction(null, "client=${client.clientName} http=${response.status.value} playability=${playerResponse.playabilityStatus.status} reason=${reason.ifBlank { "none" }} visitorPresent=${!visitorData.isNullOrBlank()} streamingData=${streamingData != null}")
     }
-    val rawAudioFormats = streamingData.adaptiveFormats.filter { it.isAudio }
+    val rawAudioFormats = ((streamingData.formats ?: emptyList()) + streamingData.adaptiveFormats)
+        .filter { it.isAudio }
     val playerConfig = if (rawAudioFormats.any { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() || it.url?.contains("n=") == true }) {
-        configParser.fetchConfig(videoId, useLoginCookies = false)
+        configParser.fetchConfig(videoId, useLoginCookies = innerTube.hasSapCookieAuth())
     } else {
         null
     }
@@ -1230,6 +1252,7 @@ private suspend fun extractDirectPlayerAudioForClient(
         ?.videoPlaybackUstreamerConfig
         ?.isNotBlank() == true
     val formatSummary = "formatCount=${audioFormats.size} cipherCount=$cipherCount urlCount=${urlFormats.size} " +
+        "progressiveAudio=${(streamingData.formats ?: emptyList()).count { it.isAudio }} " +
         "sabrUrlPresent=${!sabrUrl.isNullOrBlank()} sabrUrlHost=$sabrUrlHost " +
         "ustreamerConfigPresent=$ustreamerConfigPresent"
     val format = selectBestAudioFormat(

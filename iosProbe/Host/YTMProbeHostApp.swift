@@ -582,7 +582,7 @@ final class ProbeModel: ObservableObject {
                 let handle = try await playbackProbe.startStreaming(
                     videoId: item.id,
                     cookie: nil,
-                    tokenGroup: "baseline",
+                    tokenGroup: "ios-external",
                     tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
                     playbackClientOverrideId: candidate,
                     streamSink: sink,
@@ -656,7 +656,7 @@ final class ProbeModel: ObservableObject {
                 playlistId: "PLd9orNjDFThOxxBaWd36m-6a87SO34Y62",
                 videoId: item.id,
                 cookie: nil,
-                tokenGroup: "baseline",
+                tokenGroup: "ios-external",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
                 candidateVideoIds: [item.id],
                 sampleCount: 1,
