@@ -81,6 +81,12 @@ public class YTMProbe {
         val cipherService: YouTubeCipherService,
     )
 
+    private data class RawSabrSpec(
+        val playerClient: YouTubeClient,
+        val bootstrapClient: YouTubeClient,
+        val label: String,
+    )
+
     private val playbackBundleMutex = Mutex()
     private var cachedPlaybackBundle: PlaybackBundle? = null
     private var cachedPlaybackKey: String? = null
@@ -152,17 +158,16 @@ public class YTMProbe {
                 innerTube.cookie = it
                 innerTube.useLoginForBrowse = true
             }
-            val stream = if (playbackClientOverrideId == "IOS_SABR_RAW") {
-                extractRawIosSabr(innerTube, videoId)
-            } else if (playbackClientOverrideId == "VISIONOS_SABR_RAW" || playbackClientOverrideId == "VISIONOS_SABR") {
+            val rawSabrSpec = rawSabrSpec(playbackClientOverrideId)
+            val stream = if (rawSabrSpec != null) {
                 // A rejected visionOS player request can remain pending for several
                 // seconds on iOS before YouTube returns its playability error. That
                 // delay is longer than the complete SABR fallback itself, so bound
                 // only this speculative probe and hand control back immediately.
                 withTimeoutOrNull(RAW_SABR_PROBE_TIMEOUT_MS) {
-                    extractRawVisionosSabr(innerTube, videoId)
+                    extractRawSabr(innerTube, videoId, rawSabrSpec)
                 } ?: run {
-                    lastStreamingFailure = "TimeoutCancellationException: raw_visionos_sabr_timeout_${RAW_SABR_PROBE_TIMEOUT_MS}ms"
+                    lastStreamingFailure = "TimeoutCancellationException: raw_${rawSabrSpec.label}_timeout_${RAW_SABR_PROBE_TIMEOUT_MS}ms"
                     null
                 }
             } else {
@@ -359,10 +364,9 @@ public class YTMProbe {
                 streamAttempts += 1
                 stage = "stream_extract:$candidate"
                 try {
-                    val candidateStream = if (forceSabr && playbackClientOverrideId == "IOS_SABR_RAW") {
-                        extractRawIosSabr(innerTube, candidate)
-                    } else if (forceSabr && playbackClientOverrideId == "VISIONOS_SABR_RAW") {
-                        extractRawVisionosSabr(innerTube, candidate)
+                    val rawSabrSpec = if (forceSabr) rawSabrSpec(playbackClientOverrideId) else null
+                    val candidateStream = if (rawSabrSpec != null) {
+                        extractRawSabr(innerTube, candidate, rawSabrSpec)
                     } else if (directPlayerFastPath && !forceSabr) {
                         val directStartedAt = TimeSource.Monotonic.markNow()
                         val directHints = ContentHints(
@@ -804,75 +808,43 @@ public class YTMProbe {
             )
     }
 
-    @OptIn(ExperimentalSabrApi::class)
-    private suspend fun extractRawIosSabr(
-        innerTube: InnerTube,
-        videoId: String,
-    ): com.metrolist.innertubex.extraction.ExtractedStream? {
-        val visitorData = innerTube.sessionSnapshot().visitorData ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
-        val response = innerTube.player(
-            client = YouTubeClient.IOS,
-            videoId = videoId,
-            requestVisitorData = visitorData,
+    private fun rawSabrSpec(overrideId: String?): RawSabrSpec? = when (overrideId) {
+        "IOS_SABR_RAW", "IOS_RAW" -> RawSabrSpec(
+            playerClient = YouTubeClient.IOS,
+            bootstrapClient = YouTubeClient.IOS_SABR,
+            label = "ios",
         )
-        if (!response.status.isSuccess()) return null
-        val playerResponse = runCatching {
-            DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(response.bodyAsText())
-        }.getOrNull() ?: return null
-        if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE")) return null
-        val streaming = playerResponse.streamingData ?: return null
-        val audioFormat = selectBestAudioFormat(
-            formats = streaming.adaptiveFormats.filter { it.isAudio },
-            audioQuality = AudioQuality.MP4,
-        ) ?: return null
-        val videoFormat = streaming.adaptiveFormats
-            .asSequence()
-            .filterNot(PlayerResponse.StreamingData.Format::isAudio)
-            .filter { it.height != null }
-            .minWithOrNull(compareBy({ it.height }, { it.bitrate }))
-            ?: return null
-        val bootstrap = runCatching {
-            playerResponse.toSabrBootstrap(
-                client = YouTubeClient.IOS_SABR,
-                audioFormat = audioFormat,
-                videoFormat = videoFormat,
-            )
-        }.getOrNull() ?: return null
-        return com.metrolist.innertubex.extraction.ExtractedStream(
-            videoId = videoId,
-            audioUrl = "sabr://$videoId",
-            headers = emptyMap(),
-            loudnessDb = audioFormat.loudnessDb,
-            expiresAt = streaming.expiresInSeconds?.takeIf { it > 0 }?.let { Clock.System.now() + it.seconds },
-            contentLengthBytes = audioFormat.contentLength,
-            itag = audioFormat.itag,
-            mimeType = audioFormat.mimeType.substringBefore(';').trim(),
-            codecs = Regex("codecs=\"([^\"]+)\"").find(audioFormat.mimeType)?.groupValues?.getOrNull(1),
-            bitrate = audioFormat.bitrate,
-            sampleRate = audioFormat.audioSampleRate,
-            clientName = "IOS",
-            profileId = "IOS_SABR__raw",
-            requireBoundedRange = false,
-            rangeChunkSizeBytes = 1_048_576L,
-            sabrBootstrap = bootstrap,
+        "IPADOS_SABR_RAW", "IPADOS_RAW" -> RawSabrSpec(
+            playerClient = YouTubeClient.IPADOS,
+            bootstrapClient = YouTubeClient.IOS_SABR,
+            label = "ipados",
         )
+        "VISIONOS_0_1_SABR_RAW", "VISIONOS_0_1_RAW" -> RawSabrSpec(
+            playerClient = YouTubeClient.VISIONOS_0_1,
+            bootstrapClient = YouTubeClient.VISIONOS_0_1.copy(
+                friendlyName = "visionOS 0.1 SABR",
+                useSabr = true,
+            ),
+            label = "visionos_0_1",
+        )
+        "VISIONOS_SABR_RAW", "VISIONOS_RAW", "VISIONOS_SABR" -> RawSabrSpec(
+            playerClient = YouTubeClient.VISIONOS,
+            bootstrapClient = YouTubeClient.VISIONOS_SABR,
+            label = "visionos",
+        )
+        else -> null
     }
 
-    /** Experimental single-request SABR probe; bypasses client selection/config retries. */
     @OptIn(ExperimentalSabrApi::class)
-    private suspend fun extractRawVisionosSabr(
+    private suspend fun extractRawSabr(
         innerTube: InnerTube,
         videoId: String,
-    ): com.metrolist.innertubex.extraction.ExtractedStream? {
-        fun fail(reason: String): Nothing = error("raw_visionos_sabr:$reason")
-        val visitorData = innerTube.sessionSnapshot().visitorData
-            ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
+        spec: RawSabrSpec,
+    ): com.metrolist.innertubex.extraction.ExtractedStream {
+        fun fail(reason: String): Nothing = error("raw_${spec.label}_sabr:$reason")
+        val visitorData = innerTube.sessionSnapshot().visitorData ?: innerTube.fetchFreshVisitorData(innerTube.sessionSnapshot())
         val response = innerTube.player(
-            // The successful automatic path requests the base VISIONOS
-            // identity and applies SABR during extraction. The SABR copy has
-            // the same client id, but its transport marker can trigger a
-            // different server-side playability branch on iOS.
-            client = YouTubeClient.VISIONOS,
+            client = spec.playerClient,
             videoId = videoId,
             requestVisitorData = visitorData,
         )
@@ -881,11 +853,14 @@ public class YTMProbe {
             DIRECT_PLAYER_JSON.decodeFromString<PlayerResponse>(response.bodyAsText())
         }.getOrElse { fail("json_${it::class.simpleName ?: "decode"}") }
         if (playerResponse.playabilityStatus.status !in setOf("OK", "PLAYABLE")) {
+            val status = playerResponse.playabilityStatus.status
+                .replace(Regex("[^A-Za-z0-9_-]"), "_")
+                .take(40)
             val reason = playerResponse.playabilityStatus.reason.orEmpty()
                 .replace(Regex("[^A-Za-z0-9 _-]"), "")
                 .replace(' ', '_')
-                .take(80)
-            fail("playability_${playerResponse.playabilityStatus.status.replace(Regex("[^A-Za-z0-9_-]"), "_").take(40)}_reason=${reason.ifBlank { "none" }}")
+                .take(100)
+            fail("playability_${status}_reason=${reason.ifBlank { "none" }}")
         }
         val streaming = playerResponse.streamingData ?: fail("missing_streaming_data")
         val audioFormat = selectBestAudioFormat(
@@ -900,7 +875,7 @@ public class YTMProbe {
             ?: fail("missing_video_discard_format")
         val bootstrap = runCatching {
             playerResponse.toSabrBootstrap(
-                client = YouTubeClient.VISIONOS_SABR,
+                client = spec.bootstrapClient,
                 audioFormat = audioFormat,
                 videoFormat = videoFormat,
             )
@@ -917,8 +892,8 @@ public class YTMProbe {
             codecs = Regex("codecs=\"([^\"]+)\"").find(audioFormat.mimeType)?.groupValues?.getOrNull(1),
             bitrate = audioFormat.bitrate,
             sampleRate = audioFormat.audioSampleRate,
-            clientName = "VISIONOS",
-            profileId = "VISIONOS_SABR__raw",
+            clientName = spec.playerClient.clientName,
+            profileId = "${spec.label.uppercase()}_SABR__raw",
             requireBoundedRange = false,
             rangeChunkSizeBytes = 1_048_576L,
             sabrBootstrap = bootstrap,

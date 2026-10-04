@@ -553,75 +553,93 @@ final class ProbeModel: ObservableObject {
     }
 
     private func fetchVisionosStreamingFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
-        let state = StreamingAudioState()
-        let sink = StreamingAudioSink(state: state)
-        sink.onStateChanged = { [weak self] state in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: state.snapshot())
+        // Keep all raw identities in one build. The first candidate with a real
+        // audio prefix wins; failed candidates remain visible for server-side
+        // attestation/playability diagnosis instead of being silently discarded.
+        let candidates = [
+            "VISIONOS_0_1_SABR_RAW",
+            "VISIONOS_SABR_RAW",
+            "IOS_SABR_RAW",
+            "IPADOS_SABR_RAW",
+        ]
+        for candidate in candidates {
+            let state = StreamingAudioState()
+            let sink = StreamingAudioSink(state: state)
+            sink.onStateChanged = { [weak self] state in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: state.snapshot())
+                }
             }
-        }
-        do {
-            let handle = try await playbackProbe.startStreaming(
-                videoId: item.id,
-                cookie: nil,
-                tokenGroup: "baseline",
-                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                playbackClientOverrideId: "VISIONOS_SABR_RAW",
-                streamSink: sink,
-            )
-            guard let handle else {
+            do {
+                let handle = try await playbackProbe.startStreaming(
+                    videoId: item.id,
+                    cookie: nil,
+                    tokenGroup: "baseline",
+                    tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                    playbackClientOverrideId: candidate,
+                    streamSink: sink,
+                )
+                guard let handle else {
+                    if updateUI {
+                        let failure = playbackProbe.lastStreamingFailure
+                            .replacingOccurrences(of: "\\n", with: "_")
+                            .replacingOccurrences(of: "\\r", with: "_")
+                            .prefix(240)
+                        strategyDiagnostics += "\nRAW_MATRIX:\(candidate)=FAIL \(failure.isEmpty ? "no_handle" : String(failure))"
+                    }
+                    continue
+                }
+
+                let deadline = Date().addingTimeInterval(2.2)
+                while Date() < deadline {
+                    let snapshot = state.snapshot()
+                    if snapshot.failure != nil || snapshot.completed { break }
+                    if snapshot.available >= 8 * 1024 { break }
+                    if Task.isCancelled { handle.close(); return nil }
+                    try await Task.sleep(for: .milliseconds(40))
+                }
+                let snapshot = state.snapshot()
+                guard snapshot.failure == nil, snapshot.available >= 8 * 1024 else {
+                    let failure = (snapshot.failure ?? playbackProbe.lastStreamingFailure)
+                        .replacingOccurrences(of: "\\n", with: "_")
+                        .replacingOccurrences(of: "\\r", with: "_")
+                        .prefix(240)
+                    handle.close()
+                    if updateUI {
+                        strategyDiagnostics += "\nRAW_MATRIX:\(candidate)=FAIL \(failure.isEmpty ? "bytes_\(snapshot.available)" : String(failure))"
+                    }
+                    continue
+                }
+                if updateUI {
+                    strategyDiagnostics += "\nRAW_MATRIX:\(candidate)=PASS bytes=\(snapshot.available)"
+                    sabrDiagnostics = sabrDiagnosticsText(snapshot: snapshot)
+                }
+                return PreparedAudio(
+                    data: nil,
+                    directURL: nil,
+                    headers: [:],
+                    streamState: state,
+                    streamingHandle: handle,
+                    mimeType: snapshot.mimeType,
+                    client: handle.client,
+                    profile: handle.profile,
+                    bytes: handle.expectedBytes,
+                    expiresAt: nil,
+                )
+            } catch is CancellationError {
+                return nil
+            } catch {
                 if updateUI {
                     let failure = playbackProbe.lastStreamingFailure
                         .replacingOccurrences(of: "\\n", with: "_")
                         .replacingOccurrences(of: "\\r", with: "_")
                         .prefix(240)
-                    strategyDiagnostics += "\nVISIONOS_SABR_STREAM:FAIL \(failure.isEmpty ? "no_handle" : String(failure))"
+                    strategyDiagnostics += "\nRAW_MATRIX:\(candidate)=EXCEPTION \((error as NSError).domain):\((error as NSError).code) failure=\(failure)"
                 }
-                return nil
             }
-
-            let deadline = Date().addingTimeInterval(2.2)
-            while Date() < deadline {
-                let snapshot = state.snapshot()
-                if snapshot.failure != nil || snapshot.completed { break }
-                if snapshot.available >= 8 * 1024 { break }
-                if Task.isCancelled { handle.close(); return nil }
-                try await Task.sleep(for: .milliseconds(40))
-            }
-            let snapshot = state.snapshot()
-            guard snapshot.failure == nil, snapshot.available >= 8 * 1024 else {
-                handle.close()
-                return nil
-            }
-            if updateUI {
-                strategyDiagnostics += "\nVISIONOS_SABR_STREAM:PASS"
-                sabrDiagnostics = sabrDiagnosticsText(snapshot: snapshot)
-            }
-            return PreparedAudio(
-                data: nil,
-                directURL: nil,
-                headers: [:],
-                streamState: state,
-                streamingHandle: handle,
-                mimeType: snapshot.mimeType,
-                client: handle.client,
-                profile: handle.profile,
-                bytes: handle.expectedBytes,
-                expiresAt: nil,
-            )
-        } catch is CancellationError {
-            return nil
-        } catch {
-            if updateUI {
-                let failure = playbackProbe.lastStreamingFailure
-                    .replacingOccurrences(of: "\\n", with: "_")
-                    .replacingOccurrences(of: "\\r", with: "_")
-                    .prefix(240)
-                strategyDiagnostics += "\nVISIONOS_SABR_STREAM:EXCEPTION \((error as NSError).domain):\((error as NSError).code) failure=\(failure)"
-            }
-            return nil
         }
+        return nil
     }
 
     private func fetchDirectFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
