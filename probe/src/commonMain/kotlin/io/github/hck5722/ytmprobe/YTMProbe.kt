@@ -154,7 +154,7 @@ public class YTMProbe {
             }
             val stream = if (playbackClientOverrideId == "IOS_SABR_RAW") {
                 extractRawIosSabr(innerTube, videoId)
-            } else if (playbackClientOverrideId == "VISIONOS_SABR_RAW") {
+            } else if (playbackClientOverrideId == "VISIONOS_SABR_RAW" || playbackClientOverrideId == "VISIONOS_SABR") {
                 // A rejected visionOS player request can remain pending for several
                 // seconds on iOS before YouTube returns its playability error. That
                 // delay is longer than the complete SABR fallback itself, so bound

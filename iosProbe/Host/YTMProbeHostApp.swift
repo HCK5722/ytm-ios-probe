@@ -567,10 +567,19 @@ final class ProbeModel: ObservableObject {
                 cookie: nil,
                 tokenGroup: "baseline",
                 tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
-                playbackClientOverrideId: "VISIONOS_SABR",
+                playbackClientOverrideId: "VISIONOS_SABR_RAW",
                 streamSink: sink,
             )
-            guard let handle else { return nil }
+            guard let handle else {
+                if updateUI {
+                    let failure = playbackProbe.lastStreamingFailure
+                        .replacingOccurrences(of: "\\n", with: "_")
+                        .replacingOccurrences(of: "\\r", with: "_")
+                        .prefix(240)
+                    strategyDiagnostics += "\nVISIONOS_SABR_STREAM:FAIL \(failure.isEmpty ? "no_handle" : String(failure))"
+                }
+                return nil
+            }
 
             let deadline = Date().addingTimeInterval(2.2)
             while Date() < deadline {
@@ -605,7 +614,11 @@ final class ProbeModel: ObservableObject {
             return nil
         } catch {
             if updateUI {
-                strategyDiagnostics += "\nVISIONOS_SABR_STREAM:EXCEPTION \((error as NSError).domain):\((error as NSError).code)"
+                let failure = playbackProbe.lastStreamingFailure
+                    .replacingOccurrences(of: "\\n", with: "_")
+                    .replacingOccurrences(of: "\\r", with: "_")
+                    .prefix(240)
+                strategyDiagnostics += "\nVISIONOS_SABR_STREAM:EXCEPTION \((error as NSError).domain):\((error as NSError).code) failure=\(failure)"
             }
             return nil
         }
@@ -709,7 +722,7 @@ final class ProbeModel: ObservableObject {
                 fastPlayback: true,
                 directPlayerFastPath: false,
                 verifyAudioPrefix: false,
-                playbackClientOverrideId: "VISIONOS_SABR",
+                playbackClientOverrideId: "VISIONOS_SABR_RAW",
                 streamSink: nil,
             )
             guard fallback.streamOk, fallback.isSabr, fallback.audioComplete,
