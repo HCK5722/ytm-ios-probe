@@ -562,7 +562,12 @@ final class ProbeModel: ObservableObject {
             "IOS_SABR_RAW",
             "IPADOS_SABR_RAW",
         ]
+        let matrixDeadline = Date().addingTimeInterval(2.6)
         for candidate in candidates {
+            guard Date() < matrixDeadline else {
+                if updateUI { strategyDiagnostics += "\nRAW_MATRIX:STOP budget_ms=2600" }
+                break
+            }
             let state = StreamingAudioState()
             let sink = StreamingAudioSink(state: state)
             sink.onStateChanged = { [weak self] state in
@@ -591,7 +596,7 @@ final class ProbeModel: ObservableObject {
                     continue
                 }
 
-                let deadline = Date().addingTimeInterval(2.2)
+                let deadline = min(Date().addingTimeInterval(0.75), matrixDeadline)
                 while Date() < deadline {
                     let snapshot = state.snapshot()
                     if snapshot.failure != nil || snapshot.completed { break }
