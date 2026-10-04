@@ -879,6 +879,7 @@ public class YTMProbe {
         val audioFormat = selectBestAudioFormat(
             formats = audioFormats,
             audioQuality = AudioQuality.MP4,
+            requireUrl = false,
         ) ?: fail(
             "missing_audio_format" +
                 "_total=${allFormats.size}" +
