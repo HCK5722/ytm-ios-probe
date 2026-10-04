@@ -364,7 +364,7 @@ final class ProbeModel: ObservableObject {
 
             // Run the fast, token-backed IOS_SABR route first. Every fallback
             // appends its own result to the on-screen strategy matrix.
-            strategyDiagnostics = "IOS_SABR_PO:starting"
+            strategyDiagnostics = "TOKEN_ROLES:playerRequest=visitorData streamingData(video/GVS)=videoId\nIOS_SABR_PO:starting"
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in

@@ -1365,14 +1365,12 @@ private class BgutilTokenProvider(
             val elapsedMs = started.elapsedNow().inWholeMilliseconds
             val valid = streaming.binding == visitorData && player.binding == videoId &&
                 player.token.isNotBlank() && streaming.token.isNotBlank() && player.token != streaming.token
-            logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
+            logLines += "PROBE_TOKEN group=2a providers=[EXTERNAL] call=$callIndex videoId=$videoId playerRequestBinding=visitorData streamingDataBinding=videoId playerPresence=${player.token.isNotBlank()} playerLength=${player.token.length} streamingPresence=${streaming.token.isNotBlank()} streamingLength=${streaming.token.length} distinct=${player.token != streaming.token} bindingValid=$valid elapsedMs=$elapsedMs"
             if (!valid) return null
-            // The library names these fields by their destination, not by the
-            // local service request label: the video-bound token belongs to
-            // playerRequestToken, while the visitor-bound token belongs to
-            // streamingDataToken. Reversing them makes the service report
-            // success but causes SABR to reject the subsequent stream.
-            PoTokenResult(player.token, streaming.token, visitorData)
+            // The player request uses the visitor-bound token. The GVS/SABR
+            // request uses the video-bound token. The local request labels are
+            // intentionally different from PoTokenResult's destination names.
+            PoTokenResult(streaming.token, player.token, visitorData)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
