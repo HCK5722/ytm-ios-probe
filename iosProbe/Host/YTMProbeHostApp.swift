@@ -396,6 +396,10 @@ final class ProbeModel: ObservableObject {
                         .prefix(240)
                     sabrDiagnostics = "streamFailure=\(streamFailure.isEmpty ? "unknown" : String(streamFailure)) fallback=starting"
                 }
+                let visionosStreamingFallback = await fetchVisionosStreamingFallback(for: item, updateUI: updateUI)
+                if let visionosStreamingFallback {
+                    return visionosStreamingFallback
+                }
                 let noTokenResult = await diagnoseNoTokenSabr(for: item)
                 if updateUI { strategyDiagnostics += "\n\(noTokenResult)" }
                 let directFallback = await fetchDirectFallback(for: item, updateUI: updateUI)
@@ -470,6 +474,10 @@ final class ProbeModel: ObservableObject {
                     strategyDiagnostics = "IOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? streamFailure : primaryFailure)"
                 }
                 handle.close()
+                let visionosStreamingFallback = await fetchVisionosStreamingFallback(for: item, updateUI: updateUI)
+                if let visionosStreamingFallback {
+                    return visionosStreamingFallback
+                }
                 let noTokenResult = await diagnoseNoTokenSabr(for: item)
                 if updateUI { strategyDiagnostics += "\n\(noTokenResult)" }
                 let directFallback = await fetchDirectFallback(for: item, updateUI: updateUI)
@@ -541,6 +549,65 @@ final class ProbeModel: ObservableObject {
             return "IOS_SABR_NOPO:PREFIX bytes=\(snapshot.available) client=\(handle.client) profile=\(handle.profile)"
         } catch {
             return "IOS_SABR_NOPO:EXCEPTION \((error as NSError).domain):\((error as NSError).code)"
+        }
+    }
+
+    private func fetchVisionosStreamingFallback(for item: ItemDTO, updateUI: Bool) async -> PreparedAudio? {
+        let state = StreamingAudioState()
+        let sink = StreamingAudioSink(state: state)
+        sink.onStateChanged = { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.sabrDiagnostics = self.sabrDiagnosticsText(snapshot: state.snapshot())
+            }
+        }
+        do {
+            let handle = try await playbackProbe.startStreaming(
+                videoId: item.id,
+                cookie: nil,
+                tokenGroup: "baseline",
+                tokenServiceUrl: "http://127.0.0.1:4416/get_pot",
+                playbackClientOverrideId: "VISIONOS_SABR",
+                streamSink: sink,
+            )
+            guard let handle else { return nil }
+
+            let deadline = Date().addingTimeInterval(2.2)
+            while Date() < deadline {
+                let snapshot = state.snapshot()
+                if snapshot.failure != nil || snapshot.completed { break }
+                if snapshot.available >= 8 * 1024 { break }
+                if Task.isCancelled { handle.close(); return nil }
+                try await Task.sleep(for: .milliseconds(40))
+            }
+            let snapshot = state.snapshot()
+            guard snapshot.failure == nil, snapshot.available >= 8 * 1024 else {
+                handle.close()
+                return nil
+            }
+            if updateUI {
+                strategyDiagnostics += "\nVISIONOS_SABR_STREAM:PASS"
+                sabrDiagnostics = sabrDiagnosticsText(snapshot: snapshot)
+            }
+            return PreparedAudio(
+                data: nil,
+                directURL: nil,
+                headers: [:],
+                streamState: state,
+                streamingHandle: handle,
+                mimeType: snapshot.mimeType,
+                client: handle.client,
+                profile: handle.profile,
+                bytes: handle.expectedBytes,
+                expiresAt: nil,
+            )
+        } catch is CancellationError {
+            return nil
+        } catch {
+            if updateUI {
+                strategyDiagnostics += "\nVISIONOS_SABR_STREAM:EXCEPTION \((error as NSError).domain):\((error as NSError).code)"
+            }
+            return nil
         }
     }
 
@@ -639,10 +706,10 @@ final class ProbeModel: ObservableObject {
                 sampleCount: 1,
                 collectFullAudio: true,
                 forceSabr: true,
-                fastPlayback: false,
+                fastPlayback: true,
                 directPlayerFastPath: false,
                 verifyAudioPrefix: false,
-                playbackClientOverrideId: nil,
+                playbackClientOverrideId: "VISIONOS_SABR",
                 streamSink: nil,
             )
             guard fallback.streamOk, fallback.isSabr, fallback.audioComplete,
