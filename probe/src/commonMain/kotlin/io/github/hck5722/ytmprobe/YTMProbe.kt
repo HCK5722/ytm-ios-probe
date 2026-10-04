@@ -816,7 +816,10 @@ public class YTMProbe {
         )
         "IPADOS_SABR_RAW", "IPADOS_RAW" -> RawSabrSpec(
             playerClient = YouTubeClient.IPADOS,
-            bootstrapClient = YouTubeClient.IOS_SABR,
+            bootstrapClient = YouTubeClient.IPADOS.copy(
+                friendlyName = "iPadOS SABR",
+                useSabr = true,
+            ),
             label = "ipados",
         )
         "VISIONOS_0_1_SABR_RAW", "VISIONOS_0_1_RAW" -> RawSabrSpec(
@@ -863,11 +866,23 @@ public class YTMProbe {
             fail("playability_${status}_reason=${reason.ifBlank { "none" }}")
         }
         val streaming = playerResponse.streamingData ?: fail("missing_streaming_data")
+        // SABR responses can put the audio descriptor in progressive `formats`
+        // while adaptiveFormats only contains video or is empty. Match the
+        // extractor's allFormats behavior instead of treating that as no audio.
+        val allFormats = (streaming.formats ?: emptyList()) + streaming.adaptiveFormats
+        val audioFormats = allFormats.filter { it.isAudio }
         val audioFormat = selectBestAudioFormat(
-            formats = streaming.adaptiveFormats.filter { it.isAudio },
+            formats = audioFormats,
             audioQuality = AudioQuality.MP4,
-        ) ?: fail("missing_audio_format")
-        val videoFormat = streaming.adaptiveFormats
+        ) ?: fail(
+            "missing_audio_format" +
+                "_total=${allFormats.size}" +
+                "_audio=${audioFormats.size}" +
+                "_adaptive=${streaming.adaptiveFormats.size}" +
+                "_formats=${streaming.formats?.size ?: 0}" +
+                "_sabr=${!streaming.serverAbrStreamingUrl.isNullOrBlank()}",
+        )
+        val videoFormat = allFormats
             .asSequence()
             .filterNot(PlayerResponse.StreamingData.Format::isAudio)
             .filter { it.height != null }

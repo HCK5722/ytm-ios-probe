@@ -362,9 +362,19 @@ final class ProbeModel: ObservableObject {
             }
             if !allowFallback { return nil }
 
-            // Run the fast, token-backed IOS_SABR route first. Every fallback
-            // appends its own result to the on-screen strategy matrix.
-            strategyDiagnostics = "TOKEN_ROLES:playerRequest=visitorData streamingData(video/GVS)=videoId\nIOS_SABR_PO:starting"
+            // Raw SABR is the only route that has a chance of meeting the cold
+            // start budget on the current server response. Try it before the
+            // token-backed extractor, whose six-client chain can take 5+ seconds
+            // before returning the known attestation failure.
+            strategyDiagnostics = "RAW_FAST:starting"
+            let rawMatrixResult = await fetchVisionosStreamingFallback(for: item, updateUI: updateUI)
+            if let rawMatrixResult {
+                return rawMatrixResult
+            }
+            if updateUI { strategyDiagnostics += "\nRAW_FAST:all_failed" }
+
+            // Keep the slower token/direct routes as diagnostics and fallback.
+            strategyDiagnostics += "\nTOKEN_ROLES:playerRequest=visitorData streamingData(video/GVS)=videoId\nIOS_SABR_PO:starting"
             let streamState = StreamingAudioState()
             let sink = StreamingAudioSink(state: streamState)
             sink.onStateChanged = { [weak self] state in
@@ -395,10 +405,6 @@ final class ProbeModel: ObservableObject {
                         .replacingOccurrences(of: "\\r", with: "_")
                         .prefix(240)
                     sabrDiagnostics = "streamFailure=\(streamFailure.isEmpty ? "unknown" : String(streamFailure)) fallback=starting"
-                }
-                let visionosStreamingFallback = await fetchVisionosStreamingFallback(for: item, updateUI: updateUI)
-                if let visionosStreamingFallback {
-                    return visionosStreamingFallback
                 }
                 let noTokenResult = await diagnoseNoTokenSabr(for: item)
                 if updateUI { strategyDiagnostics += "\n\(noTokenResult)" }
@@ -474,10 +480,6 @@ final class ProbeModel: ObservableObject {
                     strategyDiagnostics = "IOS_SABR_PO:FAIL \(primaryFailure.isEmpty ? streamFailure : primaryFailure)"
                 }
                 handle.close()
-                let visionosStreamingFallback = await fetchVisionosStreamingFallback(for: item, updateUI: updateUI)
-                if let visionosStreamingFallback {
-                    return visionosStreamingFallback
-                }
                 let noTokenResult = await diagnoseNoTokenSabr(for: item)
                 if updateUI { strategyDiagnostics += "\n\(noTokenResult)" }
                 let directFallback = await fetchDirectFallback(for: item, updateUI: updateUI)
@@ -557,10 +559,10 @@ final class ProbeModel: ObservableObject {
         // audio prefix wins; failed candidates remain visible for server-side
         // attestation/playability diagnosis instead of being silently discarded.
         let candidates = [
-            "VISIONOS_0_1_SABR_RAW",
-            "VISIONOS_SABR_RAW",
             "IOS_SABR_RAW",
             "IPADOS_SABR_RAW",
+            "VISIONOS_0_1_SABR_RAW",
+            "VISIONOS_SABR_RAW",
         ]
         let matrixDeadline = Date().addingTimeInterval(2.6)
         for candidate in candidates {
